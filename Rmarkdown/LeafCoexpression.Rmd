@@ -1,0 +1,527 @@
+---
+title: "Leaf_Coexpression"
+author: "Chenxin Li"
+date: "5/16/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(tidyverse)
+library(igraph)
+library(ggraph) 
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+
+library(patchwork)
+library(cowplot)
+
+library(svglite) 
+```
+
+# Load data 
+## MIA genes 
+```{r}
+MIA_genes_info <- readRDS(file = "../Results/R_outputs/MIA_genes_info.Rds")
+
+head(MIA_genes_info)
+
+leaf_MIA_genes <- MIA_genes_info %>% 
+  mutate(tag = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "7DLGT",
+    T ~ tag
+    )) %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(order = case_when(
+    str_detect(as.character(gene), "05G028810") ~ 15, 
+    T ~ order
+  )) %>% 
+  arrange(order) %>% 
+  mutate(segment = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "Iridoid", 
+    T ~ segment
+  )) %>% 
+  filter(is.na(order) == F) %>% 
+  filter(str_detect(as.character(gene), "05G028780") == F) %>% 
+  filter(str_detect(tag, "THAS|HYS|ISP|GS2") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SDG1",
+    str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+    T ~ tag
+  )) %>% 
+  mutate(gene = str_replace_all(gene, "_", "-")) #%>% 
+  #mutate(gene = str_sub(gene, start = 1, end = 13))
+
+head(leaf_MIA_genes)
+```
+
+## Leaf 10x mRNA 
+```{r}
+expr.leaf_by_cluster <- readRDS(
+  "../Results/R_output_Leaf_scRNAseq/expr.leaf_by_cluster.Rds")
+
+head(expr.leaf_by_cluster)
+```
+
+# Find Correlation 
+```{r}
+expr.leaf_by_cluster_wide <- expr.leaf_by_cluster %>% 
+  spread(seurat_clusters, mean.rel.exp) %>% 
+  as.data.frame()
+
+row.names(expr.leaf_by_cluster_wide) <- expr.leaf_by_cluster_wide$gene
+head(expr.leaf_by_cluster_wide)
+```
+
+```{r}
+cor_mat <- cor(t(expr.leaf_by_cluster_wide[, -1]))
+dim(cor_mat)
+```
+
+# Build Edge Table
+```{r}
+number_of_clusters <- ncol(expr.leaf_by_cluster_wide) - 1
+```
+
+```{r}
+cor_mat2 <- cor_mat 
+cor_mat2[lower.tri(cor_mat2)] <- NA
+
+edge_table <- cor_mat2 %>% 
+  as.data.frame() %>% 
+  mutate(from = row.names(cor_mat)) %>% 
+  gather("to", "r", 1:ncol(cor_mat)) %>% 
+  filter(to != from) %>% 
+  filter(is.na(r) == F) %>% 
+  mutate(t = r*sqrt((number_of_clusters-2)/(1-r^2))) %>% 
+  mutate(p.value = case_when(
+    t > 0 ~ pt(t, df = number_of_clusters-2, lower.tail = F),
+    t <=0 ~ pt(t, df = number_of_clusters-2, lower.tail = T)
+  )) %>% 
+  mutate(FDR = p.adjust(p.value, method = "fdr")) %>% 
+  mutate(Type = case_when(
+    FDR < 0.01  ~ "co-expressed",
+    T ~ "not"
+  ))  
+
+head(edge_table, 10)
+```
+## FDR and r cutoffs
+```{r}
+edge_table %>% 
+  filter(FDR < 0.01) %>% 
+  arrange(-FDR) %>% 
+  head()
+
+edge_table %>% 
+  filter(r > 0.9) %>% 
+  arrange(r) %>% 
+  head()
+```
+
+When cut off at FDR < 0.01, r > 0.78
+When cut off at r = 0.9, FDR < 2.435622e-06 
+
+
+
+
+# Build node table 
+## Nodes attributes
+```{r}
+leaf_MIA_genes2 <- MIA_genes_info %>% 
+  mutate(tag = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "7DLGT",
+    str_detect(as.character(gene), "04G032090") ~ "GPPS(LSU)",
+    T ~ tag
+    )) %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(order = case_when(
+    str_detect(as.character(gene), "04G032090") ~  9,
+    str_detect(as.character(gene), "05G028810") ~ 15, 
+    T ~ order
+  )) %>% 
+  arrange(order) %>% 
+  mutate(segment = case_when(
+    str_detect(as.character(gene), "04G032090") ~ "MEP",
+    str_detect(as.character(gene), "05G028810") ~ "Iridoid", 
+    T ~ segment
+  )) %>% 
+  #filter(is.na(order) == F) %>% 
+  filter(str_detect(as.character(gene), "05G025350") == F) %>% 
+  filter(str_detect(as.character(gene), "05G028780") == F) %>% 
+  #filter(is.na(order) == F) %>% 
+  filter(str_detect(tag, "ZCT|GS2|TEX|ADH") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SDG1",
+    str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+    T ~ tag
+  )) %>% 
+  mutate(gene = str_replace_all(gene, "_", "-")) #%>% 
+  #mutate(gene = str_sub(gene, start = 1, end = 13))
+
+head(leaf_MIA_genes2)
+
+leaf_MIA_genes2 %>% 
+  filter(segment == "TF")
+```
+ 
+
+## Subset for edges linking genes in leaf_MIA_genes 
+```{r}
+edge_table_select <- edge_table %>% 
+  filter(Type == "co-expressed") %>% 
+  filter(from %in% leaf_MIA_genes2$gene |
+           to %in% leaf_MIA_genes2$gene)
+```
+
+```{r}
+Node_table_select <- expr.leaf_by_cell_type %>% 
+  group_by(gene) %>% 
+  slice_max(order_by = mean.rel.exp, n = 1) %>%
+  ungroup() %>% 
+  filter(gene %in% edge_table_select$from |
+           gene %in% edge_table_select$to) %>%
+  left_join(leaf_MIA_genes2, by = "gene") %>% 
+  mutate(tag2 = case_when(
+    is.na(tag) ~ "",
+    T ~ "known genes"
+  ))
+
+head(Node_table_select)
+```
+### Are known genes there?
+```{r}
+Node_table_select %>% 
+  filter(is.na(tag) == F) %>% 
+  filter(segment == "TF")
+```
+# Graph 
+```{r}
+MIA_network <- graph_from_data_frame(edge_table_select,
+                                     vertices = Node_table_select %>% 
+                                       mutate(tag3 = case_when(
+                          str_detect(tag, "ORCA|MYC|DAT|D4H|SS|NMT|GS|STR|LAMT|TDC|ISY|IO|G8H") ~ tag
+                                       )),
+                                     directed = F)
+```
+
+```{r}
+ggraph(MIA_network, layout = "kk", circular = F) +
+  geom_edge_diagonal(color = "grey70", width = 0.5, alpha = 0.5) +
+  geom_node_point(alpha = 0.8, color = "white", shape = 21,
+                  aes(fill = segment, size = tag2)) + 
+  geom_node_text(aes(label = tag3), size = 3, repel = T, max.overlaps = 10) +
+  scale_edge_color_manual(values = c("steelblue3", "tomato1")) +
+  scale_fill_manual(values = c(viridis(5, option = "D"),  "white"),
+                    limits = c("TF", "MEP", "Iridoid", "Alkaloid", "Late Alkaloid", "")) +
+  scale_size_manual(values = c(1, 2.5),
+                    limits = c("", "known genes")) +
+  labs(fill = "Stage of pathway") +
+  guides(size = "none",
+         fill = guide_legend(override.aes = list(size = 4), 
+                             title.position = "top", nrow = 3)) +
+  theme_void()+
+  theme(
+    text = element_text(size = 14), 
+    legend.position = "bottom",
+    legend.justification = 1,
+    title = element_text(size = 12)
+  )
+
+ggsave("../Results/R_output_Leaf_scRNAseq/Leaf_CoExp_Network.svg", height = 3.2, width = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/Leaf_CoExp_Network.png", height = 3.2, width = 3, bg = "white")
+```
+# Find DAP-seq candidates 
+## Extract modules
+```{r}
+modules <- cluster_leiden(MIA_network, resolution_parameter = 1, objective_function = "modularity")
+
+MIA_network_modules <- data.frame(
+  gene = names(membership(modules)),
+  module = membership(modules) %>% as.vector()
+) %>% 
+  inner_join(Node_table_select, by = "gene") %>% 
+  select(gene, module, cell_type, cro_v2_id, tag, `function`, segment, tag2)
+  
+head(MIA_network_modules)
+```
+* module 1 = IPAP
+* module 2 = Epidermis
+* module 3 = MYC2 
+* module 4 = IPAP
+* module 5 = ORCA3 
+
+```{r}
+MIA_network_modules %>% 
+  group_by(module) %>% 
+  count()
+```
+
+## Pull functional annotation 
+```{r}
+functional_annotation <- read_delim("../Data/cro_v3_anno/cro_v3.functional_annotation.txt",
+                                    delim = "\t", col_names = F, col_types = cols())
+
+functional_annotation <- functional_annotation %>% 
+  mutate(gene = str_remove(X1, "\\.\\d+")) %>%
+  mutate(gene = str_replace(gene, "_", "-")) %>% 
+  select(gene, X2) %>% 
+  distinct()
+
+head(functional_annotation)
+```
+
+```{r}
+MIA_network_modules_func <- MIA_network_modules %>% 
+  inner_join(functional_annotation, by = "gene")
+
+MIA_network_modules_func
+```
+
+## Idioblast
+```{r}
+Idioblast_candidates <- MIA_network_modules_func %>% 
+  filter(module == 1) %>% 
+  select(gene, X2, module, cro_v2_id, tag, `function`)
+
+Idioblast_candidates
+```
+
+```{r}
+write_excel_csv(Idioblast_candidates, 
+                "../Results/R_output_Leaf_scRNAseq/Idioblast_candidates.csv", col_names = T)
+```
+
+
+## IPAP
+```{r}
+IPAP_candidates <- MIA_network_modules_func %>% 
+  filter(module == 4) %>% 
+  select(gene, X2, module, cro_v2_id, tag, `function`)
+
+IPAP_candidates
+```
+```{r}
+write_excel_csv(IPAP_candidates, 
+                "../Results/R_output_Leaf_scRNAseq/IPAP_candidates.csv", col_names = T)
+```
+
+
+## Epidermis 
+```{r}
+epidermis_candidates <- MIA_network_modules_func %>% 
+  filter(module == 2) %>% 
+  select(gene, X2, module, cro_v2_id, tag, `function`)
+
+epidermis_candidates
+```
+```{r}
+write_excel_csv(epidermis_candidates, 
+                "../Results/R_output_Leaf_scRNAseq/epidermis_candidates.csv", col_names = T)
+```
+
+## Pull orthogroups
+```{r}
+TF_candidates <- c(
+  "CRO-08G020500", # BIS1 .
+  "CRO-02G019960", # Bhlh "BIS4".
+  "CRO-07G021290", # MYB .
+  
+  "CRO-01G004240", # MYB .
+  "CRO-04G009330", # MYB NO ortholog with CAA 
+  "CRO-06G022930", # Bhlh .
+  "CRO-08G005100", # homeo .
+  "CRO-08G008610", # homeo .
+  "CRO-06G029240", # ORCA4 .
+  "CRO-02G023440", # SBP" NO Ortholog with CAA 
+  
+  "CRO-05G019570", # MYB Epidermis and idioblast* NO Ortholog with CAA 
+  "CRO-02G002580", # MYB .
+  "CRO-03G000120", # WRKY .
+  "CRO-03G032130", # Homeo .
+  "CRO-04G007340", # BHLH .
+  "CRO-04G033370", # MYB .
+  "CRO-05G006800", # MYB No ortholog with CAA 
+  "CRO-06G000190", # HD-ZIP .
+  "CRO-07G002170", # MYB .
+  "CRO-08G008710", # Homeo No ortholog with CAA
+  
+  "CRO-06G029250" # ORCA3 .
+  )
+```
+
+```{r}
+CRO_CAA_OG <- read_delim(
+  "../Results/OF_Results_Apr29/Orthologues/Orthologues_cro_v3.gene_models.repr.pep/cro_v3.gene_models.repr.pep__v__caa_proteins_fixed.tsv", 
+                         delim = "\t", col_names = T, col_types = cols())
+
+head(CRO_CAA_OG)
+```
+### Identify orthogroup for each TF candidate
+```{r}
+match_genes <- function(gene){
+  CRO_CAA_OG %>% 
+    filter(str_detect(cro_v3.gene_models.repr.pep, as.character(gene))) 
+}
+
+
+
+OG_TF_candidates <- sapply(X = as.list(str_replace(TF_candidates, "-", "_")),
+                           FUN = match_genes, 
+                           simplify = F) %>% 
+  bind_rows(.id = "index")  
+  
+OG_TF_candidates
+```
+```{r}
+TF_candidates2 <- c(
+  "CRO-08G020500", # BIS1 .
+  "CRO-02G019960", # Bhlh "BIS4".
+  "CRO-07G021290", # MYB .
+  
+  "CRO-06G029240", # ORCA4 .
+  "CRO-01G004240", # MYB .
+ # "CRO-04G009330", # MYB NO ortholog with CAA 
+  "CRO-06G022930", # Bhlh .
+  "CRO-08G005100", # homeo .
+  "CRO-08G008610", # homeo .
+ #  "CRO-02G023440", # SBP" NO Ortholog with CAA 
+  
+ #  "CRO-05G019570", # MYB Epidermis and idioblast* NO Ortholog with CAA 
+  "CRO-02G002580", # MYB .
+  "CRO-03G000120", # WRKY .
+  "CRO-03G032130", # Homeo .Not specific in Drop-seq
+  "CRO-04G007340", # BHLH .
+  "CRO-04G033370", # MYB .
+ #  "CRO-05G006800", # MYB No ortholog with CAA 
+  "CRO-06G000190", # HD-ZIP .
+  "CRO-07G002170", # MYB .
+ # "CRO-08G008710", # Homeo No ortholog with CAA
+  
+  "CRO-06G029250" # ORCA3 .
+  )
+```
+
+* 3 orthogroups for bHLH
+* 5 orthogroups for MYB
+* 3 orthogroups for Homeodomain
+* 1 orthogroup for AP2 
+* 1 orthogroup for WRKY
+
+total = 13 orthogroups 
+
+## Pull CAA orthologs
+```{r}
+OG_TF_candidates_caa <- OG_TF_candidates %>% 
+  cbind(gene =TF_candidates2) %>% 
+  filter(gene != "CRO-03G032130")
+
+OG_TF_candidates_caa
+```
+```{r}
+write_excel_csv(OG_TF_candidates_caa, "../Results/R_output_Leaf_scRNAseq/TF_candidates.csv")
+```
+
+
+# Summary for candidates 
+```{r}
+leaf_10X$cell_type <- factor(leaf_10X$cell_type, levels = c(
+  "IPAP", "Epidermis", "Idioblast", "Mesophyll", "Vasculature", "Guard cells", "Phloem CC"
+))
+
+DAP_seq_candidates_10X <- DotPlot(leaf_10X, features = rev(OG_TF_candidates_caa$gene), group.by = "cell_type") +
+  scale_color_gradientn(colors = brewer.pal(9, "PuBuGn")) + 
+  labs(y = NULL,
+       x = "TFs") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    axis.text.y = element_blank()
+    ) +
+  coord_flip()
+
+DAP_seq_candidates_10X
+
+ggsave("../Results/R_output_Leaf_scRNAseq/DAP_seq_candidates.svg", height = 4, width = 4.5, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/DAP_seq_candidates.png", height = 4, width = 4.5, bg = "white")
+```
+
+```{r}
+Drop_seq$cell_type <- factor(Drop_seq$cell_type, levels = c(
+  "IPAP", "Epidermis", "Idioblast", "Mesophyll", "Vasculature"
+))
+
+DAP_seq_candidates_DropSeq <-DotPlot(Drop_seq, 
+                                  features = rev(OG_TF_candidates_caa$gene), 
+                                  group.by = "cell_type") +
+  scale_color_gradientn(colors = brewer.pal(9, "PuBuGn")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_flip()
+
+DAP_seq_candidates_DropSeq
+```
+## summary at gene family level 
+```{r}
+summary_cell_type <- c("IPAP", "Epidermis", "Idioblast")
+summary_gene_family <- c("bHLH", "myb", "AP2", "Homeodomain", "WRKY") 
+
+summary_gene_family_df <- expand_grid(summary_cell_type, 
+                                      summary_gene_family) %>% 
+  rename(cell_type = summary_cell_type) %>% 
+  rename(gene_family = summary_gene_family) %>% 
+  mutate(gene_family = factor(gene_family, levels = c(
+    "bHLH", "myb", "AP2", "Homeodomain", "WRKY"
+  ))) %>% 
+  mutate(gene_family = fct_rev(gene_family)) %>% 
+  mutate(cell_type2 = case_when(
+    str_detect(cell_type, "IPAP") ~ "IP",
+    str_detect(cell_type, "Epider") ~ "E",
+    str_detect(cell_type, "Idio") ~ "I"
+  )) %>% 
+  mutate(cell_type2 = factor(cell_type2, levels = c("IP", "E", "I"))) %>% 
+  cbind(
+    count = c(1, 1, 0, 0, 0,
+              1, 1, 1, 2, 0,
+              1, 3, 0, 1, 1)
+  )
+
+summary_gene_family_df
+```
+```{r}
+summary_gene_family_df %>% 
+  ggplot(aes(x = cell_type2, y = gene_family)) +
+  geom_point(aes(size = count), 
+             shape = 21, alpha = 0.8, fill = "grey20") +
+  geom_text(aes(label = count), color = "white", fontface = "bold") +
+  scale_size(range = c(-1, 12)) +
+  labs(x = "cell type",
+       y = "TF superfamily",
+       title = "5 TF superfamily\n13 orthogroups") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.text.y = element_text(hjust = 0.5),
+    legend.position = "none",
+    plot.title = element_text(size = 10)
+  )
+
+ggsave("../Results/R_output_Leaf_scRNAseq/DAP_seq_candidat_esummary.svg", height = 4, width = 4.5, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/DAP_seq_candidat_esummary.png", height = 4, width = 4.5, bg = "white")
+```
+
+ 
+

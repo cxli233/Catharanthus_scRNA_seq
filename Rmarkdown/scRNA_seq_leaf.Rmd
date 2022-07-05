@@ -1,0 +1,1076 @@
+---
+title: "scRNA_seq_leaf"
+author: "Chenxin Li"
+date: "5/13/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(Seurat) 
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(svglite) 
+library(patchwork)
+library(cowplot)
+```
+
+# Load data
+```{r}
+ah_raw <- Read10X("../Data/single_cell_matrix/AH/")
+as_raw <- Read10X("../Data/single_cell_matrix/AS/")
+at_raw <- Read10X("../Data/single_cell_matrix/AT/")
+```
+
+# Set up Seurat objects 
+```{r}
+AH <- CreateSeuratObject(counts = ah_raw, min.cells = 3, min.features = 200,
+                         project = "AH") 
+
+AS <- CreateSeuratObject(counts = as_raw, min.cells = 3, min.features = 200,
+                         project = "AS") 
+
+AT <- CreateSeuratObject(counts = at_raw, min.cells = 3, min.features = 200,
+                         project = "AT") 
+```
+
+# QC and select cells for downstream analyses
+```{r}
+VlnPlot(AH, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+VlnPlot(AS, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+VlnPlot(AT, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+```
+```{r}
+AH <- subset(AH, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+AT <- subset(AT, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+AS <- subset(AS, subset = nFeature_RNA > 200 & nFeature_RNA < 3000)
+```
+
+# Normalize
+```{r}
+AH <- NormalizeData(AH, normalization.method = "LogNormalize", scale.factor = 10000)
+AT <- NormalizeData(AT, normalization.method = "LogNormalize", scale.factor = 10000)
+AS <- NormalizeData(AS, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+# Select variable features 
+```{r}
+AH <- FindVariableFeatures(AH, selection.method = "vst", nfeatures = 3000)
+AT <- FindVariableFeatures(AT, selection.method = "vst", nfeatures = 3000)
+AS <- FindVariableFeatures(AS, selection.method = "vst", nfeatures = 3000)
+```
+
+# Integration
+```{r}
+leaf.list <- list(AH, AS, AT)
+features <- SelectIntegrationFeatures(object.list = leaf.list, nfeatures = 3000)
+anchors <- FindIntegrationAnchors(object.list = leaf.list, anchor.features = features) 
+leaf_10X <- IntegrateData(anchorset = anchors)
+```
+
+# Scale data
+```{r}
+DefaultAssay(leaf_10X) <- "integrated"
+leaf_10X <- ScaleData(leaf_10X, verbose = F)
+```
+
+# PCA
+```{r}
+leaf_10X$Run <- leaf_10X@meta.data$orig.ident
+leaf_10X <- RunPCA(leaf_10X, features = VariableFeatures(object = leaf_10X), verbose = FALSE) # run PCA
+
+DimPlot(leaf_10X, reduction = "pca", cols = brewer.pal(8, "Set2")[c(1:3)],
+        split.by = "Run", group.by = "Run") +
+theme(
+  legend.position = "none"
+)
+```
+
+# UMAP
+```{r}
+ElbowPlot(leaf_10X)
+```
+
+```{r}
+leaf_10X <- RunUMAP(leaf_10X, reduction = "pca", dims = 1:20)
+```
+
+# Call clusters 
+```{r}
+leaf_10X <- FindNeighbors(leaf_10X, dims = 1:20)
+leaf_10X <- FindClusters(leaf_10X, resolution = 0.5)
+leaf_10X <- RunUMAP(leaf_10X, dims = 1:20) 
+```
+
+
+```{r}
+UMAP1 <- DimPlot(leaf_10X, reduction = "umap", 
+                 label = T, label.size = 5, repel = T) + 
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none"
+  )
+
+UMAP1
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_1.svg", height = 3, width = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_1.png", height = 3, width = 3, bg = "white")
+```
+
+## Check replicates 
+```{r}
+DimPlot(leaf_10X, reduction = "umap", label = T, label.size = 5, repel = T, split.by = "Run") +
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none",
+    title = element_text(size = 10)
+  ) +
+  ggtitle("Grouped by replicates\n")
+
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_by_rep.svg", height = 3, width = 8, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_by_rep.png", height = 3, width = 8, bg = "white")
+```
+
+# Find cluster biomarkers 
+```{r}
+leaf_10X_markers <- FindAllMarkers(leaf_10X, only.pos = TRUE, 
+                           min.pct = 0.25, logfc.threshold = 0.25, verbose = F) 
+
+leaf_10X_markers <- leaf_10X_markers %>%  
+  filter(p_val_adj < 0.01) 
+
+head(leaf_10X_markers)
+```
+
+```{r}
+leaf_10X_markers_top2 <- leaf_10X_markers %>% 
+  group_by(cluster) %>% 
+  slice_max(n = 1, order_by = avg_log2FC)
+
+
+DotPlot(leaf_10X, features = leaf_10X_markers_top2$gene, 
+        ) +
+  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
+  labs(y = "Cluster",
+       x = "Genes") + 
+  coord_flip()
+```
+Cluster 4 and 10 are the same thing, cluster 7 and 9 are the same thing 
+
+# Identify cell types 
+```{r}
+leaf_markers <- read_csv("../Results/R_outputs/leaf_markers.csv")
+leaf_markers <- leaf_markers %>% 
+  mutate(gene = str_replace(cro.v3, "_", "-"))
+
+head(leaf_markers)
+```
+
+```{r}
+DotPlot(leaf_10X, features = unique(leaf_markers$gene), 
+        ) +
+  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
+  labs(y = "Cluster",
+       x = "Genes") + 
+  coord_flip()
+```
+* 8: vasculature
+* 3: Guard cells 
+* 0, 2, 4, 5, 6, 7, 9, 10: mesophyll 
+* 1, 13: epidermis 
+* 14: companion cells 
+
+
+```{r}
+leaf_marker_nicer <- read_excel("../Data/cell_type_marker_leaf.xlsx") 
+leaf_marker_nicer <- leaf_marker_nicer %>% 
+  mutate(gene = str_replace_all(Cro_v3, "_", "-"))
+
+head(leaf_marker_nicer)
+```
+```{r}
+leaf_cell_type_assignment <- data.frame(
+  cluster = c(0:14)
+) %>% 
+  mutate(cell_type = case_when(
+    cluster == 0 | 
+      cluster == 2 | 
+      cluster == 4 | 
+      cluster == 5 | 
+      cluster == 6 | 
+      cluster == 7 | 
+      cluster == 9 |
+      cluster == 10 ~ "Mesophyll",
+    cluster == 1 | 
+      cluster == 13 ~ "Epidermis",
+    cluster == 3 ~ "Guard cells",
+    cluster == 8 ~ "Vasculature",
+    cluster == 14 ~ "Phloem CC",
+    cluster == 11 ~ "IPAP",
+    cluster == 12 ~ "Idioblast"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Mesophyll", "Epidermis", "Guard cells",
+                              "Vasculature", "Phloem CC", 
+                              "IPAP", "Idioblast"
+                            ))) %>% 
+  mutate(cluster = factor(cluster, levels = c(
+    "0", "2", "4", "5", "6", "7", "9", "10", "1", "13", "3", "8", "14", "11", "12"
+  )))
+```
+
+
+```{r}
+levels(leaf_10X) <- c(
+    "0", "2", "4", "5", "6", "7", "9", "10",
+    "1", "13", "3",
+    "8", "14", "11", "12" 
+  )
+leaf_10X_markers_heatmap <-  DotPlot(leaf_10X, features = rev(leaf_marker_nicer$gene)) +
+  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
+  labs(y = "Cluster",
+       x = "Genes") + 
+   theme(
+     legend.position = "top",
+     legend.box = "vertical"
+   ) +
+   coord_flip()
+
+Leaf_cell_type_strip <- leaf_cell_type_assignment %>% 
+  ggplot(aes(x = cluster, y = "" )) +
+  geom_tile(aes(fill = cell_type)) +
+  scale_fill_manual(values = brewer.pal(8, "Accent")) +
+  labs(fill = "Cell type") +
+  theme_void() +
+  theme(
+    legend.position = "bottom" ,
+    text = element_text(size = 14)
+  )
+
+Leaf_cell_type_mkr_graph <- leaf_marker_nicer %>% 
+  ggplot(aes(x = "", y = -order)) +
+  geom_text(aes(label = Symbol)) +
+  theme_void()
+```
+
+
+```{r}
+leaf_assignment_graph <- leaf_cell_type_assignment %>% 
+  ggplot(aes(x = cluster, y = "")) +
+  facet_wrap(~ cell_type, scales = "free", ncol = 2) +
+  geom_point(size = 5, aes(color = cluster)) +
+  geom_text(aes(label = cluster)) +
+  labs(x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA)
+    )
+
+wrap_plots(UMAP1, leaf_assignment_graph, 
+           nrow = 2, heights = c(1, 0.9))
+
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_2.svg", height = 4.8, width = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_2.png", height = 4.8, width = 3, bg = "white")
+```
+
+
+```{r}
+wrap_plots(leaf_10X_markers_heatmap, Leaf_cell_type_mkr_graph,
+          Leaf_cell_type_strip, 
+          heights = c(1, 0.05), 
+          widths = c(1, 0.2), nrow = 2, ncol = 2)
+
+ggsave("../Results/R_output_Leaf_scRNAseq/Cell_type_assignment_plot.svg", height = 7, width = 7, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/Cell_type_assignment_plot.png", height = 7, width = 7, bg = "white")
+```
+ 
+
+# Check pathway gene
+```{r}
+MIA_genes_info <- readRDS(file = "../Results/R_outputs/MIA_genes_info.Rds")
+
+head(MIA_genes_info)
+
+leaf_MIA_genes <- MIA_genes_info %>% 
+  mutate(tag = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "7DLGT",
+    str_detect(as.character(gene), "04G032090") ~ "GPPS(LSU)",
+    T ~ tag
+    )) %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(order = case_when(
+    str_detect(as.character(gene), "04G032090") ~  9,
+    str_detect(as.character(gene), "05G028810") ~ 15, 
+    T ~ order
+  )) %>% 
+  arrange(order) %>% 
+  mutate(segment = case_when(
+    str_detect(as.character(gene), "04G032090") ~ "MEP",
+    str_detect(as.character(gene), "05G028810") ~ "Iridoid", 
+    T ~ segment
+  )) %>% 
+  filter(is.na(order) == F) %>% 
+  filter(str_detect(as.character(gene), "05G025350") == F) %>% 
+  filter(str_detect(as.character(gene), "05G028780") == F) %>% 
+  filter(str_detect(tag, "THAS|HYS|ISP|GS2") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SGD1",
+    #str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+    T ~ tag
+  )) %>% 
+  mutate(gene = str_replace_all(gene, "_", "-")) #%>% 
+  #mutate(gene = str_sub(gene, start = 1, end = 13))
+
+head(leaf_MIA_genes)
+```
+```{r}
+MIA_at_cluster <- DotPlot(leaf_10X, features = rev(leaf_MIA_genes$gene))
+
+MIA_at_cluster$data %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(gene = reorder(gene, -order)) %>%
+  mutate(tag = reorder(tag, -order)) %>%
+  ggplot(aes(y = tag, x = id)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.8) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"))) +
+  labs(x = "Cluster",
+       y = NULL, 
+       fill = "Average Exp.",
+       size = "% Expressed") +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black", face = "bold"),
+        axis.text = element_text(color = "black"))
+
+```
+## Plot pathway gene at level of cell type 
+```{r}
+metadata <- leaf_10X@meta.data %>% 
+  mutate(barcode = row.names(leaf_10X@meta.data)) %>% 
+  mutate(cell_type = case_when(
+    seurat_clusters == 0 | 
+      seurat_clusters == 2 | 
+      seurat_clusters == 4 | 
+      seurat_clusters == 5 | 
+      seurat_clusters == 6 | 
+      seurat_clusters == 7 | 
+      seurat_clusters == 9 |
+      seurat_clusters == 10 ~ "Mesophyll",
+    seurat_clusters == 1 | 
+      seurat_clusters == 13 ~ "Epidermis",
+    seurat_clusters == 3 ~ "Guard cells",
+    seurat_clusters == 8 ~ "Vasculature",
+    seurat_clusters == 14 ~ "Phloem CC",
+    seurat_clusters == 11 ~ "IPAP",
+    seurat_clusters == 12 ~ "Idioblast"
+  ))
+
+head(metadata)
+```
+```{r}
+leaf_10X$cell_type <- metadata$cell_type
+# leaf_10X$cell_type <- factor(leaf_10X$cell_type,
+#                              levels = c(
+#                                "IPAP", "Epidermis", "Idioblast",
+#                                 "Mesophyll", "Vasculature", "Guard Cells", "Phloem CC"
+#                              ))
+
+DotPlot_MIA_cell_type <- DotPlot(leaf_10X, 
+                                 features = rev(leaf_MIA_genes$gene),
+                                 group.by = "cell_type")
+```
+```{r}
+MIA_at_cell_type <- DotPlot_MIA_cell_type$data %>%
+  #filter(id != "Guard Cells") %>% 
+  #filter(id != "Phloem CC") %>% 
+  # mutate(id = factor(id, levels = c(
+  #   "IPAP", "Epidermis", "Idioblast",
+  #   "Mesophyll", "Vasculature", "Guard cells", "Phloem CC"
+  # ))) %>%
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V",
+    str_detect(id, "Guard") ~ "GC",
+    str_detect(id, "CC") ~ "CC"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V", "GC", "CC"
+  ))) %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(gene = reorder(gene, -order)) %>%
+  mutate(tag = reorder(tag, -order)) %>%
+  ggplot(aes(y = tag, x = id2)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  # scale_y_discrete(label = NULL) +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.8) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"),
+                             title.position = "top", nrow = 4)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "right",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) 
+
+MIA_at_cell_type
+
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.svg", height = 7, width = 2.8, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.png", height = 7, width = 2.8, bg = "white")
+```
+
+```{r}
+DotPlot_MIA_cell_type$data %>%
+  filter(id != "Guard cells") %>% 
+  filter(id != "Phloem CC") %>% 
+  # mutate(id = factor(id, levels = c(
+  #   "IPAP", "Epidermis", "Idioblast",
+  #   "Mesophyll", "Vasculature", "Guard cells", "Phloem CC"
+  # ))) %>%
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V",
+    str_detect(id, "Guard") ~ "GC",
+    str_detect(id, "CC") ~ "CC"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V", "GC", "CC"
+  ))) %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(gene = reorder(gene, -order)) %>%
+  mutate(tag = reorder(tag, -order)) %>%
+  ggplot(aes(y = tag, x = id2)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_y_discrete(label = NULL) +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.8) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"),
+                              nrow = 2)) +
+  #guides(fill = guide_colorbar(title.position = "top")) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "top",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) 
+
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v2.svg", height = 7.2, width = 2, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v2.png", height = 7.2, width = 2, bg = "white")
+```
+
+
+### GPPS SSU
+```{r}
+GPPS_SSU_10x <- DotPlot(leaf_10X, features = "CRO-05G001760", group.by = "cell_type") +
+  scale_x_discrete(label = "GPPS SSU") +
+  scale_y_discrete(label = c("E", "GC", "I", "IP", "M", "CC", "V")) +
+  scale_color_viridis(option = "A", begin = 0, end = 0.8, breaks = c(-1, 1)) +
+  labs(x = NULL,
+       y = NULL) +
+  guides(size = guide_legend(nrow = 2)) +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(angle = 90, hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "top",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) +
+  ggtitle("10X") +
+  coord_flip()
+
+GPPS_SSU_10x
+
+saveRDS(GPPS_SSU_10x, "../Results/R_output_Leaf_scRNAseq/GPPS_SSU_10x.Rds")
+
+#ggsave("../Results/R_output_Leaf_scRNAseq/GPPS_SSU_10x.svg", width = 3, height = 3, bg = "white")
+#ggsave("../Results/R_output_Leaf_scRNAseq/GPPS_SSU_10x.png", width = 3, height = 3, bg = "white")
+```
+
+
+```{r}
+bulk_pathway <- readRDS("../Results/R_outputs/Bulk_pathway.Rds")
+```
+
+```{r}
+bulk_pathway2 <- bulk_pathway +
+  #scale_fill_viridis(option = "A", begin = 0, end = 1) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  ggtitle("Bulk RNA-seq") +
+  #theme_classic() +
+  theme(title = element_text(size = 10, face = "bold"),
+        legend.position = "right",
+        legend.key.height = unit(0.8, "lines")) 
+
+
+MIA_at_cell_type2 <- MIA_at_cell_type +
+  scale_y_discrete(label = NULL) +
+  ggtitle("scRNA-seq") 
+  
+wrap_plots(bulk_pathway2, 
+           MIA_at_cell_type2,
+           nrow = 1, guides = "collect")
+#plot_grid(bulk_pathway2, MIA_at_cell_type, nrow = 1, align = "h", axis = "tb")
+
+ggsave("../Results/R_output_Leaf_scRNAseq/Pathway_exp.svg", height = 8, width = 5, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/Pathway_exp.png", height = 8, width = 5, bg = "white")
+```
+
+# Paralogs 
+```{r}
+paralogs <- readRDS("../Results/R_outputs/paralogs.Rds")
+
+paralogs_nice <- paralogs %>% 
+  mutate(gene = str_replace_all(v3, "_", "-")) %>% 
+  filter(tag != "SS")
+
+head(paralogs_nice)
+```
+```{r}
+Paralog_leaf <- DotPlot(leaf_10X, features = rev(paralogs_nice$gene), 
+                        group.by = "cell_type")
+```
+
+
+## graph 
+```{r}
+Paralog_leaf_sc <- Paralog_leaf$data %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  full_join(paralogs_nice, by = "gene") %>% 
+  mutate(tag = factor(tag, levels = c(
+    "GOR", "7DLGT", "ISY", "TEX2", "THAS3" 
+  ))) %>% 
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V",
+    str_detect(id, "Guard") ~ "GC",
+    str_detect(id, "CC") ~ "CC"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V", "GC", "CC"
+  ))) %>% 
+  select(avg.exp.scaled, gene, tag, id2, pct.exp) %>% 
+  filter(is.na(id2) == F) %>% 
+  filter(str_detect(gene, pattern = "07G007660|07G007690") == F) %>% 
+  ggplot(aes(y = gene, x = id2)) +
+  facet_grid(tag ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  #geom_tile(aes(fill = avg.exp.scaled)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"), na.value = "grey80",
+                        breaks = c(0, 1)) +
+  scale_size(breaks = c(40, 60)) +
+  scale_y_discrete(label = NULL) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), nrow = 2, order = 1)) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "bottom",
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size = 12, hjust = 0.5),
+    legend.justification = 1,
+    legend.box.margin = margin(t = -1, unit = ("lines")),
+    panel.border = element_rect(color = "grey20", fill =NA),
+    plot.title = element_text(size = 10)
+ ) +
+  ggtitle("leaf scRNA-seq")
+
+Paralog_leaf_sc
+```
+```{r}
+saveRDS(Paralog_leaf_sc, file = "../Results/R_output_Leaf_scRNAseq/Paralog_leaf_sc.Rds")
+```
+
+# Export mRNA expression for co-expression analyses
+```{r}
+expr.leaf <- GetAssayData(leaf_10X, slot = "scale.data")
+
+expr.leaf_by_cluster <- expr.leaf %>% 
+  as.data.frame() %>% 
+  mutate(gene = row.names(.)) %>% 
+  gather("barcode", "exp", 1:nrow(metadata)) %>%
+  inner_join(metadata, by = "barcode") %>% 
+  group_by(gene, seurat_clusters) %>% 
+  summarise(mean.rel.exp = mean(exp)) %>% 
+  ungroup()
+
+head(expr.leaf_by_cluster)
+```
+
+```{r}
+saveRDS(expr.leaf_by_cluster, "../Results/R_output_Leaf_scRNAseq/expr.leaf_by_cluster.Rds")
+```
+
+```{r}
+expr.leaf_by_cell_type <- expr.leaf %>% 
+  as.data.frame() %>% 
+  mutate(gene = row.names(.)) %>% 
+  gather("barcode", "exp", 1:nrow(metadata)) %>%
+  inner_join(metadata, by = "barcode") %>% 
+  group_by(gene, cell_type) %>% 
+  summarise(mean.rel.exp = mean(exp)) %>% 
+  ungroup()
+
+head(expr.leaf_by_cell_type)
+```
+```{r}
+saveRDS(expr.leaf_by_cell_type, "../Results/R_output_Leaf_scRNAseq/expr.leaf_by_cell_type.Rds")
+```
+
+
+# ADHs 
+
+ADH20 CRO_05G017210 
+THAS1 CRO_01G033230 
+THAS2 CRO_06G024620
+ADH32 CRO_T113155	CRO_06G024590
+ADH92 CRO_T106950	CRO_07G010530 
+???   CRO-03G016950
+
+PRX1 CRO-07G012950
+
+
+```{r}
+ADH_Dopotplot <- DotPlot(leaf_10X, features = c(
+  "CRO-07G012950", # PRX1
+  "CRO-06G024600", # GS1 
+  "CRO-05G015990", # T3R 
+  "CRO-05G017210", # ADH20
+  "CRO-01G033230", # THAS1
+  "CRO-06G024620", # THAS2
+  "CRO-07G010530", # ADH 92
+  "CRO-06G024590" # ADH 32
+), group.by = "cell_type")  
+
+```
+
+```{r}
+ADH_Dopotplot$data %>%  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V",
+    str_detect(id, "Guard") ~ "GC",
+    str_detect(id, "CC") ~ "CC"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V", "GC", "CC"
+  ))) %>% 
+  mutate(tag = case_when(
+  gene == "CRO-05G017210" ~ "ADH20",
+  gene == "CRO-01G033230" ~ "THAS1",
+  gene == "CRO-06G024620" ~ "THAS2",
+  gene == "CRO-07G010530" ~ "ADH92", 
+  gene == "CRO-06G024590" ~ "ADH32",
+  gene == "CRO-06G024600" ~ "GS1" ,
+  gene == "CRO-05G015990" ~ "T3R" ,
+  gene == "CRO-07G012950" ~ "PRX1" 
+  )) %>% 
+  mutate(tag = factor(tag, levels = c(
+   "ADH20",
+   "THAS1",
+   "THAS2",
+   "ADH92", 
+   "ADH32",
+   "GS1" ,
+   "T3R" ,
+   "PRX1" 
+  ))) %>% 
+  filter(is.na(id2) == F) %>% 
+  ggplot(aes(y = tag, x = id2)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  scale_fill_viridis(option = "A", end = 0.8, breaks = c(0, 2)) +
+  #scale_fill_gradientn(colors = brewer.pal(9, "YlOrRd"), na.value = "grey80") +
+  #scale_y_discrete(label = NULL) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"), 
+                             order = 2, nrow = 2)) +
+  labs(x = "Cell types",
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  theme_classic() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top",
+    legend.box = "vertical", 
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size = 12, hjust = 0.5)
+ )
+
+ggsave("../Results/R_output_Leaf_scRNAseq/ADHs.svg", height = 4, width = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/ADHs.png", height = 4, width = 3, bg = "white")
+```
+ 
+# Check SS reads
+```{r}
+ah_raw_df <- ah_raw %>% 
+  as.data.frame() %>% 
+  mutate(gene_ID = row.names(ah_raw))
+
+at_raw_df <- at_raw %>% 
+  as.data.frame() %>% 
+  mutate(gene_ID = row.names(ah_raw))
+
+as_raw_df <- as_raw %>% 
+  as.data.frame() %>% 
+  mutate(gene_ID = row.names(ah_raw))
+
+Dropseq_raw_df <- Dropseq_raw %>% 
+  rename(gene_ID = GENE)
+
+nrow(ah_raw)
+nrow(at_raw)
+nrow(as_raw)
+nrow(Dropseq_raw)
+```
+
+```{r}
+ah_SS <- ah_raw_df %>% 
+  filter(gene_ID == "CRO_03G003550" |
+           gene_ID == "CRO_03G003540" |
+           gene_ID == "CRO_07G007680" |
+           gene_ID == "CRO_07G007670" ) %>% 
+  gather("cell", "count", 1:ncol(ah_raw))
+
+at_SS <- at_raw_df %>% 
+  filter(gene_ID == "CRO_03G003550" |
+           gene_ID == "CRO_03G003540"|
+           gene_ID == "CRO_07G007680" |
+           gene_ID == "CRO_07G007670" ) %>% 
+  gather("cell", "count", 1:ncol(at_raw))
+
+as_SS <- as_raw_df %>% 
+  filter(gene_ID == "CRO_03G003550" |
+           gene_ID == "CRO_03G003540"|
+           gene_ID == "CRO_07G007680" |
+           gene_ID == "CRO_07G007670" ) %>% 
+  gather("cell", "count", 1:ncol(as_raw))
+
+Drop_SS <- Dropseq_raw_df %>% 
+  filter(gene_ID == "CRO_03G003550" |
+           gene_ID == "CRO_03G003540"|
+           gene_ID == "CRO_07G007680" |
+           gene_ID == "CRO_07G007670" ) %>% 
+  gather("cell", "count", 2:ncol(Dropseq_raw_df))
+
+leaf_SS <- rbind(
+  ah_SS, at_SS, as_SS
+)
+
+head(leaf_SS)
+```
+
+```{r}
+leaf_SS %>% 
+  filter(count > 0) %>%
+  group_by(gene_ID) %>% 
+  summarise(median = median(count),
+            mean = mean(count),
+            Q1 = quantile(count, 0.25),
+            Q3 = quantile(count, 0.75),
+            UL = quantile(count, 0.975),
+            LL = quantile(count, 0.025),
+            max = max(count)) %>% 
+  ungroup()
+
+leaf_SS %>% 
+  filter(count > 0) %>%
+  group_by(gene_ID) %>% 
+  count()
+```
+
+```{r}
+Drop_SS %>% 
+  filter(count > 0) %>%
+  group_by(gene_ID) %>% 
+  summarise(median = median(count),
+            mean = mean(count),
+            Q1 = quantile(count, 0.25),
+            Q3 = quantile(count, 0.75),
+            UL = quantile(count, 0.975),
+            LL = quantile(count, 0.025),
+            max = max(count)) %>% 
+  ungroup()
+```
+ 
+```{r}
+Drop_SS %>% 
+  filter(count > 0) %>%
+  group_by(gene_ID) %>% 
+  count()
+```
+
+# Check gene clusters  
+## NMT
+```{r}
+DotPlot(leaf_10X, features = "CRO-03G003160",
+        group.by = "cell_type") 
+
+DotPlot(leaf_10X, features = "CRO-03G003140",
+        group.by = "cell_type") # NMT
+```
+## MATE 
+```{r}
+## MATE 
+DotPlot(leaf_10X, features = "CRO-03G032320",
+        group.by = "cell_type") 
+```
+## STRTr
+```{r}
+DotPlot(leaf_10X, features = "CRO-01G009160",
+        group.by = "cell_type") 
+
+DotPlot(Root_Integrated, features = "CRO-01G009160",
+        group.by = "cell_type")
+```
+## ADH
+```{r}
+DotPlot(leaf_10X, features = c(
+  "CR-01G032410",
+  "CRO-01G032420",
+  "CRO-01G032430",
+  "CRO-01G033080",
+  "CRO-01G033090",
+  "CRO-01G033160"
+),
+        group.by = "cell_type")
+
+```
+## Acetyltransferase
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-02G000910",
+  "CRO-02G000920",
+  "CRO-02G001000",
+  "CRO-02G001020",
+  "CRO-02G001050",
+  "CRO-02G001060",
+  "CRO-02G001070",
+  "CRO-02G001080",
+  "CRO-02G001090",
+  "CRO-02G001100",
+  "CRO-02G001110"
+),
+        group.by = "cell_type") +
+  coord_flip()
+
+DotPlot(Root_Integrated, features = c(
+ "CRO-02G000910",
+  "CRO-02G000920",
+  "CRO-02G001000",
+  "CRO-02G001020",
+  "CRO-02G001050",
+  "CRO-02G001060",
+  "CRO-02G001070",
+  "CRO-02G001080",
+  "CRO-02G001090",
+  "CRO-02G001100",
+  "CRO-02G001110"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+## CS
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-03G003820",
+  "CRO_03G003840"
+),
+        group.by = "cell_type") +
+  coord_flip()
+
+DotPlot(Root_Integrated, features = c(
+ "CRO-03G003820",
+  "CRO_03G003840"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+ 
+## GO 
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-05G015940",
+  "CRO-05G014230",
+ "CRO-05G014330",
+ "CRO-05G014340"
+),
+        group.by = "cell_type") +
+  coord_flip()
+
+DotPlot(Root_Integrated, features = c(
+ "CRO-05G015940",
+  "CRO-05G014230",
+ "CRO-05G014330",
+ "CRO-05G014340"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+
+## Redox1
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-05G017150",
+ "CRO-05G017160",
+ "CRO-05G017170",
+ "CRO-05G017180",
+ "CRO-05G017210",
+ "CRO-05G017220",
+ "CRO-05G017270"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+## T19H
+```{r}
+FeaturePlot(leaf_10X, features = c(
+ "CRO-05G032890",
+ "CRO-05G033650",
+ "CRO-05G033820",
+ "CRO-05G033830"
+), order = T) +
+  coord_flip()
+```
+## T3O
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-06G008450",
+ "CRO-06G008460",
+ "CRO-06G008470",
+ "CRO-06G008480",
+ "CRO-06G008490"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+
+## D4H
+```{r}
+DotPlot(leaf_10X, features = c(
+ "CRO-06G013310",
+ "CRO-06G013320",
+ "CRO-06G013330",
+ "CRO-06G013360",
+ "CRO-06G013370",
+ "CRO-06G013390",
+ "CRO-06G013410",
+ "CRO-06G013420"
+),
+        group.by = "cell_type") +
+  coord_flip()
+
+DotPlot(Root_Integrated, features = c(
+ "CRO-06G013310",
+ "CRO-06G013320",
+ "CRO-06G013330",
+ "CRO-06G013360",
+ "CRO-06G013370",
+ "CRO-06G013390",
+ "CRO-06G013410",
+ "CRO-06G013420"
+),
+        group.by = "cell_type") +
+  coord_flip()
+```
+

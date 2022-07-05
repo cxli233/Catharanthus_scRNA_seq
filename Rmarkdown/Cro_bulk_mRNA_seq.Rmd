@@ -1,0 +1,797 @@
+---
+title: "Cro_bulk_mRNA_seq"
+author: "Chenxin Li"
+date: "5/3/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+
+library(svglite)
+
+library(patchwork)
+library(cowplot)
+```
+
+# Load data 
+```{r}
+metadata <- read_csv("../Data/bulk_mRNA/metadata.csv", 
+                     col_names = F, col_types = cols())
+
+metadata
+```
+
+```{r}
+FPKM_Matrix <- read_delim("../Data/bulk_mRNA/catharanthus_sra_genes_fpkm_matrix_v2.txt",
+                         col_types = cols())
+
+head(FPKM_Matrix)
+```
+# Tidy data 
+```{r}
+FPKM_Matrix_long <- FPKM_Matrix %>% 
+  gather("tissue", "FPKM", 5:ncol(.))
+
+head(FPKM_Matrix_long)
+```
+
+# Load pathway gene info  
+```{r}
+MIA_genes_root<- read_excel("~/Desktop/UGA/JW_CRO/MIA Gene List_root.xlsx")
+head(MIA_genes_root)
+
+transcripts <- read_delim("../../CRO_v3/Data/cro_v3_anno/cro_v3.gene_models.repr.gff3",
+                          col_names = F, delim = "\t", col_types = cols())
+
+head(transcripts)
+
+v3_curate <- read_excel("../../CRO_v3/Data/pathway_gene_v3.xlsx")
+head(v3_curate)
+```
+
+# Tidy pathway gene info 
+```{r}
+genes <- transcripts %>% 
+  filter(X3 == "mRNA") %>% 
+  filter(str_detect(X1, "Chr")) %>% 
+  separate(X9, c("ID", "Name"), sep = ";") %>% 
+  mutate(gene = str_remove(Name, "Name=")) %>% 
+  mutate(gene = str_sub(gene, 1, 13)) %>% 
+  select(X1, X4, X5, X3, gene)  
+
+head(genes)
+
+v3_curate_nice <- v3_curate %>% 
+  mutate(cro_v2_id = str_remove(cro_v2_id, ".path1")) %>% 
+  separate(cro_v3_region, c("Chr", "Start..End"), sep = ":") %>% 
+  separate(Start..End, c("start", "end"), sep = "\\.\\.") %>% 
+  mutate(start = as.numeric(start)) %>% 
+  mutate(end = as.numeric(end)) %>% 
+  mutate(gene = str_sub(cro_v3_gene, start = 1, end = 13))
+
+head(v3_curate_nice)
+
+MIA_genes_info <- genes %>% 
+  full_join(
+    v3_curate_nice,
+    by = "gene") %>% 
+  full_join(
+    MIA_genes_root %>% 
+      rename(cro_v2_id = gene), by = c("cro_v2_id")
+  ) %>% 
+  filter(is.na(X1) == F) %>% 
+  separate(annotation, c("tag", "function"), sep = "\\|")
+  
+MIA_genes_info 
+
+saveRDS(MIA_genes_info, "../Results/R_outputs/MIA_genes_info.Rds")
+```
+
+# Acetyltransferases 
+## Wrangle data 
+```{r}
+AT_TAD <- MIA_genes_info %>% 
+  filter(X1 == "Chr2") %>% 
+  filter(X4 > 1.45e6 & X5 < 1.65e6) %>% 
+  arrange(X4) 
+
+head(AT_TAD)
+```
+ 
+```{r}
+Acetyltransferases <- FPKM_Matrix_long %>% 
+  filter(chr == "Chr2") %>%
+  filter(position_left > 1.435e6 & position_right < 1.65e6)  %>% 
+  full_join(
+    AT_TAD, by = c("gene_id"="gene")
+  )
+
+Acetyltransferases
+```
+
+## Graph
+
+```{r}
+HiCKey_out_nice %>%
+               filter(X2 <= 2) %>% 
+               filter(Chr == "chr2") %>%
+               filter(X1 > 1.435e6 & X1 < 1.65e6)
+```
+
+```{r}
+Acetyltransferases %>% 
+  mutate(TAD = case_when(
+    position_right < 1530000 ~ "TAD i",
+    position_right < 1580000 ~ "TAD ii",
+    T ~ "TAD iii"
+  )) %>% 
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  filter(str_detect(tissue, "Leaf|Root")) %>% 
+  filter(is.na(tag) == F) %>% 
+  ggplot(aes(x = tissue2, y = FPKM)) +
+  facet_wrap(~ TAD, scales = "free") +
+  geom_point(size = 3, alpha = 0.8, shape = 21, color = "grey20", 
+             position = position_jitter(width = 0.01, seed = 666),
+             aes(fill = tag)) +
+  #ggrepel::geom_text_repel(aes(label = gene_id)) +
+  scale_fill_manual(values = c(brewer.pal(8, "Accent")[c(1,3,5)]),
+                   limits = c("MAT", "TAT", "DAT")) +
+  labs(x = "Tissue", 
+       fill = "Gene") +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black"),
+    #axis.line = element_line(size = 1)
+    strip.background = element_blank(),
+    panel.spacing = unit(1, "lines")
+  )
+
+ggsave("../Results/R_outputs/TAD_FPKM_AT.svg", height = 3, width = 4, bg = "white")
+ggsave("../Results/R_outputs/TAD_FPKM_AT.png", height = 3, width = 4, bg = "white")
+```
+
+```{r}
+Acetyltransferases %>% 
+  mutate(TAD = case_when(
+    position_right < 1530000 ~ "TAD i",
+    position_right < 1580000 ~ "TAD ii",
+    T ~ "TAD iii"
+  )) %>% 
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  filter(str_detect(tissue, "Leaf|Root")) %>% 
+ # filter(is.na(tag) == F) %>% 
+  ggplot(aes(x = tissue2, y = FPKM)) +
+  facet_wrap(~ TAD, scales = "free") +
+  geom_line(aes(group = gene_id), alpha = 0.5) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, color = "grey20", 
+            # position = position_jitter(width = 0.1, seed = 666),
+             aes(fill = tag)) +
+  #ggrepel::geom_text_repel(aes(label = gene_id)) +
+  scale_fill_manual(values = c(brewer.pal(8, "Accent")[c(1:3)], "grey80"),
+                   limits = c("MAT", "TAT", "DAT", NA)) +
+  labs(x = "Tissue", 
+       fill = "Gene") +
+  theme_classic() +
+  theme(
+    legend.position = "top",
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black"),
+    #axis.line = element_line(size = 1)
+    strip.background = element_blank(),
+    panel.spacing = unit(1, "lines")
+  )
+
+ggsave("../Results/R_outputs/TAD_FPKM_all.svg", height = 3, width = 6, bg = "white")
+ggsave("../Results/R_outputs/TAD_FPKM_all.png", height = 3, width = 6, bg = "white")
+```
+
+```{r}
+Acetyltransferases %>% 
+  mutate(TAD = case_when(
+    position_right < 1530000 ~ "TAD i",
+    position_right < 1580000 ~ "TAD ii",
+    T ~ "TAD iii"
+  )) %>% 
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  filter(str_detect(tissue, "Leaf|Root")) %>% 
+  filter(is.na(tag)== F) %>% 
+  select(-tissue) %>% 
+  spread(tissue2, FPKM) %>% 
+  mutate(log2FC = log2(Leaf/Root)) %>% 
+  filter(is.na(log2FC)==F) %>% 
+  mutate(log2FC_2 = case_when(
+    log2FC == -Inf ~ -10,
+    log2FC == Inf ~ 10,
+    T ~ log2FC
+  )) %>% 
+  ggplot(aes(x = tag, y = log2FC_2)) +
+  facet_grid(. ~ TAD, scales = "free_x", space = "free") +
+  geom_hline(yintercept = 0) +
+  geom_segment(yend = 0, aes(xend = tag), size = 2, alpha = 0.6) +
+  geom_point(aes(fill = tag), 
+             size = 3, color = "grey20", shape = 21, alpha = 0.8) +
+  scale_fill_manual(values = c(brewer.pal(8, "Accent")[c(1:3)]),
+                   limits = c("MAT", "TAT", "DAT")) +
+  labs(x = NULL,
+       y = "log2FC\nLeaf / Root",
+       fill = NULL) +
+  theme_bw() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 14, face = "bold", color = "black"),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(1, "lines")
+  )
+```
+
+# Heat map of pathway 
+```{r}
+Bulk_pathway <- MIA_genes_info %>% 
+  mutate(tag = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "7DLGT",
+    str_detect(as.character(gene), "04G032090") ~ "GPPS(LSU)",
+    T ~ tag
+    )) %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(order = case_when(
+    str_detect(as.character(gene), "04G032090") ~  9,
+    str_detect(as.character(gene), "05G028810") ~ 15, 
+    T ~ order
+  )) %>% 
+  arrange(order) %>% 
+  mutate(segment = case_when(
+    str_detect(as.character(gene), "04G032090") ~ "MEP",
+    str_detect(as.character(gene), "05G028810") ~ "Iridoid", 
+    T ~ segment
+  )) %>% 
+  filter(is.na(order) == F) %>% 
+  filter(str_detect(as.character(gene), "05G025350") == F) %>% 
+  filter(str_detect(as.character(gene), "05G028780") == F) %>% 
+  filter(str_detect(tag, "THAS|HYS|ISP|GS2") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SGD1",
+   # str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+   str_detect(tag, "MATE") ~ "SLTr" ,
+    T ~ tag
+  )) %>% 
+  filter(is.na(tag) == F) %>% 
+  arrange(order) %>% 
+  filter(is.na(order) == F) %>% 
+  left_join(FPKM_Matrix_long, by = c("gene"="gene_id")) %>%
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  mutate(tissue3 = case_when(
+    str_detect(tissue2, "Shoot_MeJA_6hr") ~ "Shoot MeJA 6hr",
+    str_detect(tissue2, "Shoot_MeJA_24") ~ "Shoot MeJA 24hr",
+    str_detect(tissue2, "Control") ~ "Shoot Ctrl",
+    str_detect(tissue2, "Seedlings$") ~ "Seedling Ctrl",
+    str_detect(tissue2, "Seedlings_MeJA_5") ~ "Seedling MeJA 5d",
+    str_detect(tissue2, "Seedlings_MeJA_12") ~ "Seedling MeJA 12d", 
+    T ~ tissue2
+  )) %>% 
+  mutate(tissue3 = factor(tissue3, levels = c(
+    "Root", "Flower", "Leaf", 
+    "Shoot Ctrl", "Shoot MeJA 6hr", "Shoot MeJA 24hr",
+    "Seedling Ctrl", "Seedling MeJA 5d", "Seedling MeJA 12d"
+  ))) %>% 
+  mutate(tag = reorder(tag, -order)) %>% 
+  filter(str_detect(tissue2, "Seedling|24") == F) %>% 
+  mutate(logFPKM = log2(FPKM + 0.25)) %>% 
+  group_by(tag) %>% 
+  mutate(z.score = (logFPKM - mean(logFPKM))/sd(logFPKM)) %>% 
+  ungroup() %>% 
+  ggplot(aes(x = tissue3, y = tag)) +
+  geom_tile(aes(fill = z.score)) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")),
+                       limits = c(-2.5, 2.5), breaks = c(-2, 0, 2)) +
+  #scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  #scale_fill_gradientn(colors = viridis(n = 10, option = "A")[1:10]) +
+  labs(x = NULL,
+       y = NULL,
+       fill = "z score") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(color = "black", hjust = 0.5),
+    axis.text.x = element_text(color = "black", angle = 45, hjust = 1),
+    legend.position = "top",
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size = 12)
+  )
+
+Bulk_pathway
+
+ggsave("../Results/R_outputs/bulk_pathway_heatmap.svg", height = 9, width = 2, bg = "white")
+ggsave("../Results/R_outputs/bulk_pathway_heatmap.png", height = 9, width = 2, bg = "white")
+```
+
+```{r}
+saveRDS(Bulk_pathway, file = "../Results/R_outputs/Bulk_pathway.Rds")
+```
+
+# log2FC MeJA vs. ctrl 
+```{r}
+MeJA_FC <- MIA_genes_info %>% 
+  filter(is.na(tag) == F) %>% 
+  arrange(order) %>% 
+  filter(is.na(order) == F) %>% 
+  filter(str_detect(tag, "THAS|HYS|ISP|GS2") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SDG1",
+    str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+    T ~ tag
+  )) %>% 
+  left_join(FPKM_Matrix_long, by = c("gene"="gene_id")) %>%
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  mutate(tissue3 = case_when(
+    str_detect(tissue2, "Shoot_MeJA_6hr") ~ "Shoot MeJA 6hr",
+    str_detect(tissue2, "Shoot_MeJA_24") ~ "Shoot MeJA 24hr",
+    str_detect(tissue2, "Control") ~ "Shoot Ctrl",
+    str_detect(tissue2, "Seedlings$") ~ "Seedling Ctrl",
+    str_detect(tissue2, "Seedlings_MeJA_5") ~ "Seedling MeJA 5d",
+    str_detect(tissue2, "Seedlings_MeJA_12") ~ "Seedling MeJA 12d", 
+    T ~ tissue2
+  )) %>% 
+  mutate(tissue3 = factor(tissue3, levels = c(
+    "Root", "Flower", "Leaf", 
+    "Shoot Ctrl", "Shoot MeJA 6hr", "Shoot MeJA 24hr",
+    "Seedling Ctrl", "Seedling MeJA 5d", "Seedling MeJA 12d"
+  ))) %>% 
+  mutate(tag = reorder(tag, -order)) %>% 
+  select(-tissue, -tissue2) %>% 
+  spread(tissue3, FPKM) %>% 
+  mutate(log2FC_Shoot_6 = log2(`Shoot MeJA 6hr` / `Shoot Ctrl`)) %>% 
+  mutate(log2FC_Shoot_24 = log2(`Shoot MeJA 24hr` / `Shoot Ctrl`)) %>% 
+  mutate(log2FC_Seedling_5 = log2(`Seedling MeJA 5d` / `Seedling Ctrl`)) %>% 
+  mutate(log2FC_Seedling_12 = log2(`Seedling MeJA 12d` / `Seedling Ctrl`)) %>%
+  pivot_longer(cols = starts_with("log2FC"), 
+               names_to = "comparison",
+               values_to = "log2FC") %>%
+  mutate(comparison2 = case_when(
+    str_detect(comparison, "Shoot_6") ~ "Shoot MeJA 6hr",
+    str_detect(comparison, "Shoot_24") ~ "Shoot MeJA 24hr",
+    str_detect(comparison, "Seedling_5") ~ "Seedling MeJA 5d",
+    str_detect(comparison, "Seedling_12") ~ "Seedling MeJA 12d", 
+  )) %>% 
+  mutate(comparison2 = factor(comparison2, levels = c(
+    "Shoot MeJA 6hr", "Shoot MeJA 24hr",
+    "Seedling MeJA 5d", "Seedling MeJA 12d"
+  ))) %>% 
+  ggplot(aes(x = comparison2, y = tag)) +
+  geom_tile(aes(fill = log2FC)) +
+  geom_text(aes(label = signif(log2FC, 2)),
+            size = 3) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")), 
+                       limits = c(-4, 4),
+                       breaks = c(-2, 0, 2)) +
+  #scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  #scale_fill_gradientn(colors = viridis(n = 10, option = "A")[1:10]) +
+  labs(x = NULL,
+       y = NULL,
+       fill = "log2FC\nMeJA / Ctrl") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text.y = element_blank(),
+    axis.text.x = element_text(color = "black", angle = 45, hjust = 1),
+    legend.position = "right",
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size = 12),
+    legend.justification = 1
+  )
+
+
+plot_grid(Bulk_pathway, MeJA_FC, nrow = 1,
+          rel_widths = c(1, 0.8), align = "h", axis = "lrtb")
+
+ggsave("../Results/R_outputs/bulk_pathway_heatmap_2.svg", height = 9, width = 6, bg = "white")
+ggsave("../Results/R_outputs/bulk_pathway_heatmap_2.png", height = 9, width = 6, bg = "white")
+```
+# Paralog MeJA
+## Parse paralogs 
+```{r}
+paralogs <- v3_curate %>% 
+  filter(str_detect(cro_v3_gene, "/")) %>% 
+  separate(cro_v3_gene, c("A", "B", "C", "D"), sep = "/") %>% 
+  gather("paralog", "v3", A, B, C, D) %>% 
+  filter(is.na(v3) == F) %>% 
+  mutate(v2 = str_remove(cro_v2_id, ".path1")) %>% 
+  left_join(MIA_genes_root, by = c("v2"="gene")) %>% 
+  filter(segment != "TF") %>% 
+  separate(annotation, c("tag", "description"), sep = "\\|") %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "ISP") ~ "ISY",
+    T ~ tag
+  )) %>% 
+  filter(tag != "GOR") %>% 
+  filter(tag != "SS")
+  
+head(paralogs)
+
+saveRDS(paralogs, "../Results/R_outputs/paralogs.Rds")
+```
+
+## Graph paralogs
+```{r}
+paralog_MeJA_FC <- paralogs %>% 
+  left_join(FPKM_Matrix_long, by = c("v3"="gene_id")) %>%
+  filter(str_detect(tissue, "Shoot_MeJA_6hr") |
+           str_detect(tissue, "Shoot_MeJA_Control")) %>% 
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  mutate(tissue3 = case_when(
+    str_detect(tissue2, "Shoot_MeJA_6hr") ~ "Shoot MeJA 6hr",
+    str_detect(tissue2, "Control") ~ "Shoot Ctrl",
+    T ~ tissue2
+  )) %>% 
+  mutate(tissue3 = factor(tissue3, levels = c(
+    "Shoot Ctrl", "Shoot MeJA 6hr"
+  ))) %>% 
+  select(-tissue, -tissue2) %>% 
+  spread(tissue3, FPKM) %>% 
+  mutate(log2FC = log2(`Shoot MeJA 6hr` / `Shoot Ctrl`)) %>% 
+  mutate(tag = factor(tag, levels = c(
+    "GOR", "7DLGT", "ISY", "SS", "TEX2", "THAS3" 
+  ))) %>% 
+  mutate(text = case_when(
+    is.na(log2FC) ~ "N.D.",
+    log2FC == Inf ~ "N.D.",
+    T ~ ""
+  )) %>% 
+  filter(str_detect(v3, "07G007660|07G007690") == F) %>% 
+  ggplot(aes(x = " ", y = v3)) +
+  facet_grid(tag ~ ., scales = "free_y", space = "free_y", switch = "y") +
+  geom_tile(aes(fill = log2FC)) +
+  #geom_text(aes(label = signif(log2FC, 2)), size = 4, fontface = "bold") +
+  geom_text(aes(label = text), size = 4, fontface = "bold") +
+  #scale_y_discrete(label = NULL) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")), 
+                       limits = c(-4, 4),
+                       breaks = c(-2, 0, 2), na.value = "grey80") +
+  #scale_fill_gradientn(colors = brewer.pal(9, "YlGnBu")) +
+  #scale_fill_gradientn(colors = viridis(n = 10, option = "A")[1:10]) +
+  labs(x = NULL,
+       y = NULL,
+       fill = "log2FC\nMeJA / Ctrl") +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    #axis.text.y = element_blank(),
+    axis.text.x = element_text(color = "black", angle = 45, hjust = 1),
+    legend.position = "bottom",
+    legend.key.width = unit(0.8, "lines"),
+    legend.title = element_text(size = 12, hjust = 0.5),
+    legend.justification = 1,
+    legend.box.margin = margin(t = -1, unit = ("lines")),
+    panel.border = element_rect(color = "grey20", fill =NA),
+    plot.title = element_text(size = 10)
+  ) +
+  ggtitle("shoot meJA\ntreatment")
+
+paralog_MeJA_FC
+
+ggsave("../Results/R_outputs/paralog_MeJA.svg", height = 5.5, width = 2.5, bg = "white")
+ggsave("../Results/R_outputs/paralog_MeJA.png", height = 5.5, width = 2.5, bg = "white")
+```
+```{r}
+saveRDS(paralog_MeJA_FC, file = "../Results/R_outputs/paralog_MeJA_FC.Rds")
+```
+
+
+```{r}
+paralogs %>% 
+  left_join(FPKM_Matrix_long, by = c("v3"="gene_id")) %>%
+  filter(str_detect(tissue, "Shoot_MeJA_6hr") |
+           str_detect(tissue, "Shoot_MeJA_Control")) %>% 
+  mutate(tissue2 = str_remove(tissue, "_FPKM")) %>% 
+  mutate(tissue3 = case_when(
+    str_detect(tissue2, "Shoot_MeJA_6hr") ~ "Shoot MeJA 6hr",
+    str_detect(tissue2, "Control") ~ "Shoot Ctrl",
+    T ~ tissue2
+  )) %>% 
+  mutate(tissue3 = factor(tissue3, levels = c(
+    "Shoot Ctrl", "Shoot MeJA 6hr"
+  ))) %>% 
+  select(-tissue, -tissue2) %>% 
+  spread(tissue3, FPKM) %>% 
+  mutate(log2FC = log2(`Shoot MeJA 6hr` / `Shoot Ctrl`)) %>% 
+  mutate(tag = factor(tag, levels = c(
+    "GOR", "7DLGT", "ISY", "SS", "TEX2", "THAS3" 
+  ))) %>% 
+  mutate(text = case_when(
+    is.na(log2FC) ~ "N.D.",
+    log2FC == Inf ~ "N.D.",
+    T ~ ""
+  )) %>% 
+  arrange(tag)
+```
+
+# check SS
+```{r}
+FPKM_Matrix_long %>% 
+  filter(gene_id == "CRO_03G003550" |
+           gene_id == "CRO_03G003540"|
+           gene_id == "CRO_07G007680" |
+           gene_id == "CRO_07G007670" ) %>% 
+  filter(str_detect(tissue, "Leaf|Shoot"))
+```
+
+# Export MIA v2 to v3 gene IDs  
+## Pull v2 contigs 
+```{r}
+v2_gff3 <- read_delim(
+  "../../JW_CRO/Catharanthus_scRNAseq_Raw_Data/doi_10.5061_dryad.08vv50n__v1/cro_v2.gene_models.gff3", 
+                      col_names = F, col_types = cols(), delim = "\t", skip = 1)
+
+head(v2_gff3)
+```
+
+```{r}
+v2_gff3_simplifed <- v2_gff3 %>% 
+  filter(X3 == "gene") %>% 
+  separate(X9, c("a", "b", "c"), sep = ";") %>% 
+  separate(a, c("a1", "cro_v2_id"), sep = "=") %>% 
+  dplyr::select(X1, X4, X5, cro_v2_id) %>%
+  dplyr::rename(
+    v2_scaffold = X1,
+    v2_start = X4,
+    v2_end = X5
+  )
+
+head(v2_gff3_simplifed)
+```
+
+
+```{r}
+MIA_pathway_genes <- MIA_genes_info %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(cro_v3_id = case_when(
+    tag == "GOR" ~ "CRO_01G027010",
+    tag == "ISY" ~ "CRO_07G007680",
+    tag == "ISP" ~ "CRO_07G007670",
+    T ~ cro_v3_gene
+  )) %>% 
+  arrange(order) %>%
+  dplyr::select(-Chr, -start, -end) %>% 
+  rename(Chr = X1,
+         start = X4,
+         end = X5) %>% 
+  dplyr::select(Chr, start, end, ori, cro_v2_id, cro_v3_id, tag) %>% 
+  mutate(cro_v2_id = str_remove(cro_v2_id, "T")) %>% 
+  inner_join(v2_gff3_simplifed, by = "cro_v2_id") %>% 
+  arrange(Chr, start)
+
+head(MIA_pathway_genes, 20)
+```
+
+```{r}
+write_excel_csv(MIA_pathway_genes, "../Results/R_outputs/MIA_v2_v3_gene_ids.csv")
+```
+
+# Ortholog and gene cluster
+## Load ortholog data 
+```{r}
+OG <- read_delim("../Results/OF_Results_Apr29/Orthogroups/Orthogroups.tsv",
+                 delim = "\t", col_types = cols())
+
+head(OG)
+```
+
+```{r}
+OG_cro <- OG[, c(1,4)]
+colnames(OG_cro) <- c("Orthogroup", "cro_v3")
+
+OG_cro <- OG_cro  %>% 
+  filter(is.na(cro_v3) == F)
+
+head(OG_cro)
+```
+
+## match OG 
+
+```{r}
+head(genes)
+match_genes <- function(gene){
+  OG_cro %>% 
+    filter(str_detect(cro_v3, gene)) %>% 
+    select(Orthogroup) %>%
+    mutate(gene = gene)
+  
+}
+
+match_genes(genes$gene[1])
+```
+
+```{r}
+cro_genes_OG <- apply(X = genes[, 5], FUN = match_genes, MARGIN = 1) %>%   # Slow 
+  bind_rows(.id = "index")
+
+head(cro_genes_OG)
+```
+```{r}
+cro_genes_OG_v3 <- cro_genes_OG %>% 
+  inner_join(genes, by = "gene")
+
+head(cro_genes_OG_v3)
+```
+## all MIA OGs 
+```{r}
+all_MIA_v3 <- MIA_pathway_genes %>% 
+  separate(cro_v3_id, c("A", "B", "C", "D"), sep = "/") %>% 
+  select(tag, A, B, C, D) %>% 
+  pivot_longer(cols=c(A, B, C, D), values_to = "cro_v3") %>% 
+  filter(is.na(cro_v3) == F) %>% 
+  select(tag, cro_v3)
+
+head(all_MIA_v3)
+```
+
+```{r}
+all_MIA_OG <- cro_genes_OG_v3 %>% 
+  filter(gene %in% all_MIA_v3$cro_v3)
+
+head(all_MIA_OG)
+```
+## Subset for all genes in the same Orthogroups as MIA pathway genes 
+```{r}
+MIA_pathway_Orthogroups <- cro_genes_OG_v3 %>% 
+  filter(Orthogroup %in% all_MIA_OG$Orthogroup) %>% 
+  full_join(all_MIA_v3, by = c("gene" = "cro_v3")) %>% 
+  select(-index) %>%
+  rename(Chr = X1, 
+         start = X4,
+         end = X5) %>% 
+  filter(is.na(Orthogroup) == F) %>% 
+  full_join(MIA_pathway_genes %>% 
+              select(tag, cro_v2_id, v2_scaffold, v2_start, v2_end),
+            by = "tag") %>% 
+  arrange(Orthogroup, Chr, start, end)
+
+head(MIA_pathway_Orthogroups)
+```
+```{r}
+write_excel_csv(MIA_pathway_Orthogroups, "../Results/R_outputs/MIA_pathway_Orthogroups.csv") 
+```
+
+### sort by Chr, start
+```{r}
+MIA_pathway_Orthogroups_2 <- MIA_pathway_Orthogroups %>% 
+  arrange(Chr, start)
+
+View(MIA_pathway_Orthogroups_2)
+```
+
+# Exons 
+## Representative gene models  
+```{r}
+Exons_per_gene <- transcripts %>% 
+  filter(X3 == "exon") %>% 
+  filter(str_detect(X1, "Chr")) %>% 
+  mutate(gene = str_remove(X9, "Parent=")) %>% 
+  mutate(gene = str_sub(gene, 1, 13)) %>% 
+  select(X1, X4, X5, X3, gene) %>% 
+  group_by(gene) %>% 
+  count() %>% 
+  ungroup()
+
+
+head(Exons_per_gene)
+```
+## Pathway genes 
+```{r}
+all_MIA_v3_exons <- all_MIA_v3 %>% 
+  inner_join(Exons_per_gene, by = c("cro_v3"="gene")) %>% 
+  filter(str_detect(tag, "ZCT|THAS|HY|BIS|ADH20|GS2|ORCA|GBF") == F) %>% 
+  filter(str_detect(cro_v3, "CRO_05G028780|CRO_05G028790|CRO_05G028800")==F)
+
+head(all_MIA_v3_exons)
+```
+## genes in orthogroups 
+```{r}
+MIA_pathway_Orthogroups_exon <- MIA_pathway_Orthogroups_2 %>% 
+  inner_join(Exons_per_gene, by = "gene")
+
+head(MIA_pathway_Orthogroups_exon)
+```
+## All co-expressed genes 
+```{r}
+Idioblast_candidates <- read_csv("../Results/R_output_Leaf_scRNAseq/Idioblast_candidates.csv")
+
+head(Idioblast_candidates)
+```
+
+```{r}
+Idioblast_candidates_exon <- Idioblast_candidates %>% 
+  mutate(gene = str_replace(gene, "-", "_")) %>% 
+  inner_join(Exons_per_gene, by = "gene")
+
+head(Idioblast_candidates_exon)
+```
+## Comparison
+```{r}
+Exons_per_gene_s <- Exons_per_gene %>% 
+  summarise(
+    Mean = mean(n),
+    Median = median(n),
+    Q2 = quantile(n, 0.25),
+    Q3 = quantile(n, 0.75),
+    UL = quantile(n, 0.975),
+    LL = quantile(n, 0.025),
+    N = n()
+  ) %>% 
+  mutate(class = "Representative\ngene models")
+
+
+all_MIA_v3_exons_s <- all_MIA_v3_exons %>% 
+  summarise(
+    Mean = mean(n),
+    Median = median(n),
+    Q2 = quantile(n, 0.25),
+    Q3 = quantile(n, 0.75),
+    UL = quantile(n, 0.975),
+    LL = quantile(n, 0.025),
+    N = n()
+  ) %>% 
+  mutate(class = "Pathway\ngenes")
+
+
+MIA_pathway_Orthogroups_exon_s <- MIA_pathway_Orthogroups_exon %>% 
+  summarise(
+    Mean = mean(n),
+    Median = median(n),
+    Q2 = quantile(n, 0.25),
+    Q3 = quantile(n, 0.75),
+    UL = quantile(n, 0.975),
+    LL = quantile(n, 0.025),
+    N = n()
+  ) %>% 
+  mutate(class = "Pathway\ngene paralogs")
+
+Idioblast_candidates_exon_s <- Idioblast_candidates_exon %>% 
+  summarise(
+    Mean = mean(n),
+    Median = median(n),
+    Q2 = quantile(n, 0.25),
+    Q3 = quantile(n, 0.75),
+    UL = quantile(n, 0.975),
+    LL = quantile(n, 0.025),
+    N = n()
+  ) %>% 
+  mutate(class = "Idioblast\nmodule")
+
+```
+
+
+```{r}
+Exon_number_summary <- rbind(
+  Exons_per_gene_s,
+  all_MIA_v3_exons_s,
+  MIA_pathway_Orthogroups_exon_s,
+  Idioblast_candidates_exon_s
+) 
+
+Exon_number_summary
+```
+

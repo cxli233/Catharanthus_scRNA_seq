@@ -1,0 +1,446 @@
+---
+title: "Drop_Seq_leaf"
+author: "Chenxin Li"
+date: "5/16/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(tidyverse)
+library(Seurat) 
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(svglite) 
+library(patchwork)
+library(cowplot)
+```
+
+# Load data
+```{r}
+Dropseq_raw <- read_delim("../Data/single_cell_matrix/AA_AB/cro_aa_ab_DEG.txt",
+                          delim = "\t", escape_double = F, trim_ws = T, col_types = cols())
+```
+
+# Set up Seurat object
+```{r}
+Drop_seq <- CreateSeuratObject(counts = Dropseq_raw[, -1], min.cells = 3, min.features = 200, project = "Drop-seq", row.names = Dropseq_raw$GENE) 
+```
+
+# QC and cell selection
+```{r}
+VlnPlot(Drop_seq, features = c("nFeature_RNA", "nCount_RNA"), ncol = 2)
+```
+```{r}
+Drop_seq <- subset(Drop_seq, subset = nFeature_RNA > 200 & nFeature_RNA < 2500)
+```
+
+# Normalize 
+```{r}
+Drop_seq <- NormalizeData(Drop_seq, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+# Select Feature
+```{r}
+Drop_seq <- FindVariableFeatures(Drop_seq, selection.method = "vst", nfeatures = 3000)  
+```
+
+```{r}
+VariableFeaturePlot(Drop_seq)
+```
+# Scale Data 
+```{r}
+Drop_seq <- ScaleData(Drop_seq)
+```
+
+# PCA
+```{r}
+Drop_seq <- RunPCA(Drop_seq, features = VariableFeatures(object = Drop_seq), verbose = F)
+DimPlot(Drop_seq, reduction = "pca") +
+theme(
+  legend.position = "none"
+)
+```
+# Determine dimension of data 
+```{r}
+ElbowPlot(Drop_seq)
+```
+# UMAP 
+```{r}
+Drop_seq <- RunUMAP(Drop_seq, reduction = "pca", dims = 1:20)
+```
+
+# Find clusters 
+```{r}
+Drop_seq <- FindNeighbors(Drop_seq, dims = 1:20)
+Drop_seq <- FindClusters(Drop_seq, resolution = 0.5)
+Drop_seq <- RunUMAP(Drop_seq, dims = 1:20)
+```
+
+```{r}
+UMAP1_dropseq <- DimPlot(Drop_seq, reduction = "umap", label = T, label.size = 5, repel = T) + 
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    legend.position = "none",
+    title = element_text(size = 10)
+  ) +
+  ggtitle("scRNA-seq with\nDrop-seq platform")
+
+UMAP1_dropseq
+```
+# Identify cell types 
+```{r}
+leaf_markers <- read_csv("../Results/R_outputs/leaf_markers.csv")
+leaf_markers <- leaf_markers %>% 
+  mutate(gene = str_replace(cro.v3, "_", "-"))
+
+head(leaf_markers)
+```
+
+```{r}
+DotPlot(Drop_seq, features = unique(leaf_markers$gene), 
+        ) +
+  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
+  labs(y = "Cluster",
+       x = "Genes") + 
+  coord_flip()
+```
+
+```{r}
+leaf_marker_nicer <- read_excel("../Data/cell_type_marker_leaf.xlsx") 
+leaf_marker_nicer <- leaf_marker_nicer %>% 
+  mutate(gene = str_replace_all(Cro_v3, "_", "-"))
+
+head(leaf_marker_nicer)
+```
+
+```{r}
+levels(Drop_seq) <- c(
+  "0", "1", "2", "4", "5",
+  "3", "8", "7", "6"
+)
+
+DotPlot(Drop_seq, features = rev(leaf_marker_nicer$gene)) +
+  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
+  labs(y = "Cluster",
+       x = "Genes") + 
+   theme(
+     legend.position = "top",
+     legend.box = "vertical"
+   ) +
+   coord_flip()
+```
+```{r}
+Drop_seq_leaf_cell_type <- data.frame(
+  cluster = 0:8
+) %>% 
+  mutate(cell_type = case_when(
+    cluster == 0 | 
+      cluster == 1 | 
+      cluster == 2 | 
+      cluster == 4 | 
+      cluster == 5  ~ "Mesophyll",
+    cluster == 3 ~ "Epidermis",
+    cluster == 8 ~ "Vasculature",
+    cluster == 7 ~ "IPAP",
+    cluster == 6 ~ "Idioblast"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, 
+                            levels = c(
+                              "Mesophyll", "Epidermis",  
+                              "Vasculature",  
+                              "IPAP", "Idioblast"))) %>% 
+  mutate(cluster = factor(cluster, levels = c(
+    "0", "1", "2", "4", "5",
+  "3", "8", "7", "6"
+  )))
+
+Drop_seq_leaf_assignment_graph <- Drop_seq_leaf_cell_type %>% 
+  ggplot(aes(x = cluster, y = "")) +
+  facet_wrap(~ cell_type, scales = "free", ncol = 2) +
+  geom_point(size = 5, aes(color = cluster)) +
+  geom_text(aes(label = cluster)) +
+  labs(x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    panel.grid = element_blank(),
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text.x = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA) 
+    ) 
+
+wrap_plots(UMAP1_dropseq, Drop_seq_leaf_assignment_graph, 
+           nrow = 2, heights = c(1, 0.5))
+
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_Dropseq.svg", 
+       height = 4.7, width = 3, bg = "white")
+
+ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_Dropseq.png", 
+       height = 4.7, width = 3, bg = "white")
+```
+
+# MIA at cell type 
+```{r}
+Dropseq_metadata <- Drop_seq@meta.data %>% 
+  mutate(barcode = row.names(Drop_seq@meta.data)) %>% 
+  mutate(cell_type = case_when(
+     seurat_clusters == 0 | 
+      seurat_clusters == 1 | 
+      seurat_clusters == 2 | 
+      seurat_clusters == 4 | 
+      seurat_clusters == 5  ~ "Mesophyll",
+    seurat_clusters == 3 ~ "Epidermis",
+    seurat_clusters == 8 ~ "Vasculature",
+    seurat_clusters == 7 ~ "IPAP",
+    seurat_clusters == 6 ~ "Idioblast"
+  ))
+
+head(Dropseq_metadata)
+```
+```{r}
+Drop_seq$cell_type <- Dropseq_metadata$cell_type
+
+DotPlot_MIA_cell_type_Dropseq <- DotPlot(Drop_seq, 
+                                 features = rev(leaf_MIA_genes$gene),
+                                 group.by = "cell_type")
+```
+
+```{r}
+DotPlot_MIA_cell_type_Dropseq$data %>%
+  #filter(id != "Guard Cells") %>% 
+  #filter(id != "Phloem CC") %>% 
+  # mutate(id = factor(id, levels = c(
+  #   "IPAP", "Epidermis", "Idioblast",
+  #   "Mesophyll", "Vasculature", "Guard cells", "Phloem CC"
+  # ))) %>%
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V"
+  ))) %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(tag = case_when(
+    tag == "MATE" ~ "SLTr",
+    T ~ tag
+  )) %>% 
+  mutate(gene = reorder(gene, -order)) %>%
+  mutate(tag = reorder(tag, -order)) %>%
+  ggplot(aes(y = tag, x = id2)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  # scale_y_discrete(label = NULL) +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.8) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"),
+                             title.position = "top", col = 1)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "right",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) 
+
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_Drop.svg", height = 7, width = 2.8, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_Drop.png", height = 7, width = 2.8, bg = "white")
+```
+### GGPS SSU
+
+```{r}
+GPPS_SSU_10x <- readRDS("../Results/R_output_Leaf_scRNAseq/GPPS_SSU_10x.Rds")
+```
+
+```{r}
+GPPS_SSU_Drop <- DotPlot(Drop_seq, features = "CRO-05G001760", group.by = "cell_type") +
+  scale_x_discrete(label = "GPPS SSU") +
+  scale_y_discrete(label = c("E", "I", "IP", "M", "V")) +
+  scale_color_viridis(option = "A", begin = 0, end = 0.8, breaks = c(-1, 1)) +
+  #scale_size_continuous(breaks = c(30, 40, 50)) +
+  labs(x = NULL,
+       y = NULL) +
+  guides(size = guide_legend(nrow = 2, order = 1)) +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(angle = 90, hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "top",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) +
+  ggtitle("Drop-seq") +
+  coord_flip()
+
+wrap_plots(GPPS_SSU_10x, GPPS_SSU_Drop)
+
+
+ggsave("../Results/R_output_Leaf_scRNAseq/GPPS_SSU_Drop.svg", width = 6, height = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/GPPS_SSU_Drop.png", width = 6, height = 3, bg = "white")
+```
+
+
+
+# Drop-seq vs 10x
+```{r}
+expr.drop <- GetAssayData(Drop_seq, slot = "scale.data")
+
+expr.drop_by_cell_type <- expr.drop %>% 
+  as.data.frame() %>% 
+  mutate(gene = row.names(.)) %>% 
+  gather("barcode", "exp", 1:nrow(Dropseq_metadata)) %>%
+  inner_join(Dropseq_metadata, by = "barcode") %>% 
+  group_by(gene, cell_type) %>% 
+  summarise(mean.rel.exp = mean(exp)) %>% 
+  ungroup()
+
+head(expr.drop_by_cell_type)
+```
+```{r}
+expr.drop_by_cluster %>% 
+  group_by(gene) %>% 
+  count() %>% 
+  nrow()
+```
+
+## Wrangle data 
+```{r}
+expr.leaf_10x <- readRDS("../Results/R_output_Leaf_scRNAseq/expr.leaf_by_cell_type.Rds")
+
+head(expr.leaf_10x)
+```
+```{r}
+Drop_wide <- expr.drop_by_cluster %>% 
+  mutate(Drop_cell_type = paste0("DropSeq", cell_type)) %>% 
+  select(-cell_type) %>% 
+  spread(Drop_cell_type, mean.rel.exp) 
+
+leaf_10X_wide <- expr.leaf_10x %>% 
+  mutate(TenX_cell_type = paste0("TenX", cell_type)) %>% 
+  select(-cell_type) %>% 
+  spread(TenX_cell_type, mean.rel.exp) 
+
+head(Drop_wide)
+head(leaf_10X_wide)
+```
+
+```{r}
+Dropwide2 <- Drop_wide %>% 
+  inner_join(leaf_10X_wide, by = "gene") %>% 
+  select(1:6)
+
+head(Dropwide2)
+
+leaf_10X_wide2 <- Drop_wide %>% 
+  inner_join(leaf_10X_wide, by = "gene") %>% 
+  select(1, 7:ncol(.))
+
+head(leaf_10X_wide2)
+```
+
+## Find Correlations 
+```{r}
+cor(Dropwide2$DropSeqMesophyll, leaf_10X_wide2)
+```
+
+```{r}
+cor_cell_type <- function(v){
+  cor(v, leaf_10X_wide2[,-1])
+}
+
+Dropseq_vs_10X <- apply(Dropwide2[,-1], MARGIN = 2, FUN = cor_cell_type) %>% 
+  as.data.frame() %>% 
+  mutate(TenX = colnames(leaf_10X_wide2[,-1]))
+
+head(Dropseq_vs_10X)
+```
+## visualize results 
+```{r}
+Dropseq_vs_10X %>% 
+  gather("Dropseq_cell_type_tag", "Cor", 1:5) %>% 
+  mutate(leaf_10X_cell_type = str_remove(TenX, "TenX")) %>% 
+  mutate(Drop_seq_cell_type = str_remove(Dropseq_cell_type_tag, "DropSeq")) %>% 
+  mutate(TenX_tag =  case_when(
+    str_detect(leaf_10X_cell_type, "Meso") ~ "M",
+    str_detect(leaf_10X_cell_type, "Epi") ~ "E",
+    str_detect(leaf_10X_cell_type, "IP") ~ "IP",
+    str_detect(leaf_10X_cell_type, "Idio") ~ "I",
+    str_detect(leaf_10X_cell_type, "Vas") ~ "V",
+    str_detect(leaf_10X_cell_type, "Guard") ~ "GC",
+    str_detect(leaf_10X_cell_type, "CC") ~ "CC"
+  )) %>% 
+  mutate(Drop_tag = case_when(
+    str_detect(Drop_seq_cell_type, "Meso") ~ "M",
+    str_detect(Drop_seq_cell_type, "Epi") ~ "E",
+    str_detect(Drop_seq_cell_type, "IP") ~ "IP",
+    str_detect(Drop_seq_cell_type, "Idio") ~ "I",
+    str_detect(Drop_seq_cell_type, "Vas") ~ "V",
+    str_detect(Drop_seq_cell_type, "Guard") ~ "GC",
+    str_detect(Drop_seq_cell_type, "CC") ~ "CC"
+  )) %>% 
+  mutate(TenX_tag = factor(TenX_tag, levels = c(
+    "M", "E", "V", "IP", "I", "GC", "CC"
+  ))) %>% 
+  mutate(Drop_tag = factor(Drop_tag, levels = c(
+    "M", "E", "V", "IP", "I"
+  ))) %>% 
+  mutate(Drop_tag = fct_rev(Drop_tag)) %>% 
+  ggplot(aes(x = TenX_tag, y = Drop_tag)) +
+  geom_tile(aes(fill = Cor)) +
+  scale_fill_viridis(option = "D",
+                       breaks = c(-0.9, 0, 0.9),
+                     limits = c(-1, 1)) +
+  labs(x = "10X cell types",
+       y = "Drop-seq cell types",
+       fill = "r") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    legend.position = "right"
+  )
+
+ggsave("../Results/R_output_Leaf_scRNAseq/DropSeq_vs_10x.svg", height = 2.25, width = 3.5, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/DropSeq_vs_10x.png", height = 2.25, width = 3.5, bg = "white")
+```
+```{r}
+View(Dropseq_vs_10X)
+```
+

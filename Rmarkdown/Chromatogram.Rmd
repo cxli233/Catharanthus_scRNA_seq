@@ -1,0 +1,159 @@
+---
+title: "Chromatogram"
+author: "Chenxin Li"
+date: '2022-06-25'
+output:
+  html_document:
+    toc: yes  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+
+
+library(viridis)
+library(svglite)
+library(RColorBrewer)
+library(patchwork)
+```
+# Data
+```{r}
+epidermis <- read_csv("../Data/epidermal_croma.csv", col_types = cols())
+
+idioblast <- read_csv("../Data/idioblast_croma.csv", col_types = cols())
+
+head(epidermis)
+head(idioblast)
+```
+# Wrangle data
+## Wide to long 
+```{r}
+epidermis_tidy <- epidermis %>% 
+  pivot_longer(cols = c(BPC, Secologanin, Vinblastine_2, 
+                        Serpentine, Anhydrovinblastine_iminium, Catharanthine),
+               names_to = "Name", values_to = "Intensity") %>% 
+  mutate(Name = case_when(
+    str_detect(Name, "Vinblastine_2") ~ "Vinblastine",
+    str_detect(Name, "Anhy") ~ "AHVB iminium",
+    T ~ Name
+  )) %>% 
+  mutate(cell_type = "Epidermis") %>% 
+  filter(Name == "Secologanin" |
+           Name == "BPC")
+
+head(epidermis_tidy)
+```
+
+```{r}
+Idioblast_tidy <- idioblast %>% 
+  pivot_longer(cols = c(BPC, Secologanin, Vinblastine_2, 
+                        Serpentine, Anhydrovinblastine_iminium, Catharanthine),
+               names_to = "Name", values_to = "Intensity") %>% 
+  mutate(Name = case_when(
+    str_detect(Name, "Vinblastine_2") ~ "Vinblastine",
+    str_detect(Name, "Anhy") ~ "AHVB iminium",
+    T ~ Name
+  )) %>% 
+  mutate(cell_type = "Idioblast") %>% 
+  filter(Name != "Secologanin")
+
+head(Idioblast_tidy)
+```
+
+## Combine two cell types into one long dataframe
+```{r}
+Chroma <- rbind(
+  epidermis_tidy,
+  Idioblast_tidy
+)
+
+
+head(Chroma)
+```
+
+# Graph
+```{r}
+Chroma %>% 
+  filter(Name != "Vinblastine") %>% 
+  mutate(Vertical = case_when(
+    cell_type == "Epidermis" ~ 1,
+    T ~ 2
+  )) %>% 
+  #filter(Vertical == 1) %>%
+  mutate(RT = case_when(
+    cell_type == "Epidermis" ~ `Retention time`,
+    T ~ `Retention time` + 0.2
+  )) %>% 
+  mutate(Intensity2 = case_when(
+    cell_type == "Epidermis" ~ Intensity,
+    T ~ `Intensity` + 0.4
+  )) %>% 
+  mutate(Name2 = paste(Name, cell_type)) %>% 
+  mutate(Name2_order = case_when(
+    str_detect(Name2, "Idio") ~ 1,
+    T ~ 2
+  )) %>% 
+  mutate(Name2 = reorder(Name2, Name2_order)) %>% 
+  ggplot(aes(x = RT,
+             y = Intensity2)) +
+  geom_segment(x = 2, xend = 2.5,
+               y = 0, yend = 1,
+               color = "grey75") +
+  geom_segment(x = 4, xend = 4.5,
+               y = 0, yend = 1,
+               color = "grey75") +
+  geom_segment(x = 6, xend = 6.5,
+               y = 0, yend = 1,
+               color = "grey75") + 
+  geom_segment(x = 2.4, xend = 6.9,
+               y = 0.8, yend = 0.8,
+               color = "grey75") +
+  geom_segment(x = 1.98, xend = 6.5,
+               y = -Inf, yend = -Inf,
+               size = 1.1, color = "grey20") +
+  geom_segment(x = -Inf, xend = -Inf,
+               y = -0.01, yend = 1.01,
+               size = 1.1, color = "grey20") +
+  geom_line(aes(color = Name, group = Name2), 
+            size = 0.75) +
+  annotate(geom = "text", label = "Epidermis",
+           x = 7.1, y = 0, size = 4) +
+  annotate(geom = "text", label = "Idioblast",
+           x = 7.3, y = 0.4, size = 4) +
+  scale_color_manual(
+    values = c("grey40", brewer.pal(8, "Set2")),
+    limits = c("BPC","Secologanin", "Catharanthine", "Serpentine", "AHVB iminium")
+  ) +
+  scale_y_continuous(breaks = c(0, 0.5, 1),
+                     labels = c(0, 0.5, 1),
+                     limits = c(0, 1.4)) +
+  labs(y = "Relative Intensity",
+       x = "Retention time (min)",
+       color = NULL) +
+  guides(color = guide_legend(nrow = 3)) +
+  xlim(c(2, 7.5)) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    text = element_text(color = "black", size = 14),
+    axis.text = element_text(color = " black"),
+    axis.title.y = element_text(hjust = 0),
+    axis.title.x = element_text(hjust = 0.4),
+    legend.position = "top",
+    axis.ticks = element_line(color = "grey20")
+  )
+
+ggsave("../Results/Chromatogram.svg", height = 3.5, width = 4.3, bg = "white")
+ggsave("../Results/Chromatogram.pdf", height = 3.5, width = 4.3, bg = "white")
+ggsave("../Results/Chromatogram.png", height = 3.5, width = 4.3, bg = "white")
+```
+

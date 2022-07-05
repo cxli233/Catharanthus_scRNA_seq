@@ -1,0 +1,146 @@
+---
+title: "Idioblast_conc"
+author: "Chenxin Li"
+date: '2022-06-17'
+output:
+  html_document:
+    toc: yes  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(viridis)
+library(svglite)
+library(RColorBrewer)
+library(patchwork)
+```
+
+# Data
+```{r}
+Idioblat_conc <- read_excel("../Data/Idioblast_conc.xlsx", range = "A1:I48")
+head(Idioblat_conc)
+```
+
+## wide to long 
+```{r}
+conc_tidy <- Idioblat_conc %>% 
+  pivot_longer(cols = ends_with("_fmol"), names_to = "Compound_fmol", values_to = "fmol") %>% 
+  mutate(Compound = str_remove(Compound_fmol, "_fmol")) %>% 
+  mutate(mM = fmol/Volume_pL) %>% 
+  select(-Compound_fmol)
+
+head(conc_tidy)
+```
+
+# Summary stats 
+```{r}
+conc_tidy_S <- conc_tidy %>% 
+  group_by(Compound) %>%
+  filter(is.na(mM) == F) %>% 
+  summarise(
+    Mean = mean(mM),
+    Median = median(mM),
+    SD = sd(mM),
+    NN = n()
+  ) %>% 
+  ungroup()
+
+head(conc_tidy_S)
+```
+
+# Graph
+```{r}
+higher <- conc_tidy %>% 
+  mutate(class = case_when(
+    str_detect(Compound, "AHVB|Vinblast") ~ "B",
+    T ~ "A"
+  )) %>% 
+  filter(class == "A") %>% 
+  ggplot(aes(x = Compound, y = mM)) +
+  # facet_wrap(class ~ ., scales = "free", nrow = 2) +
+  ggbeeswarm::geom_quasirandom(aes(fill = Compound),
+                               shape = 21, color = "grey20", size = 3, alpha = 0.8) +
+  scale_fill_manual(values = brewer.pal(8, "Accent")[c(1,2,3,5, 6)]) +
+  scale_x_discrete(label = NULL) +
+  scale_y_continuous(breaks = c(0, 50, 100, 150, 200)) +
+  labs(x = "\n",
+       y = "mM",
+       fill = NULL) +
+  theme_classic() +
+  theme(
+    legend.position = c(0.7, 0.8),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    legend.background = element_rect(fill = NA)
+  )
+
+#higher
+
+
+lower <- conc_tidy %>% 
+  mutate(class = case_when(
+    str_detect(Compound, "AHVB|Vinblast") ~ "B",
+    T ~ "A"
+  )) %>% 
+  filter(class == "B") %>% 
+  ggplot(aes(x = Compound, y = mM*1000)) +
+  # facet_wrap(class ~ ., scales = "free", nrow = 2) +
+  ggbeeswarm::geom_quasirandom(aes(fill = Compound),
+                               shape = 21, color = "grey20", size = 3, alpha = 0.8) +
+  scale_fill_manual(values = brewer.pal(8, "Accent")[c(5, 6)]) +
+  scale_x_discrete(label = NULL) +
+  labs(x = NULL,
+       y = expression(
+        paste(mu, "M")
+        ),
+       fill = NULL) +
+  theme_classic() +
+  theme(
+    legend.position = c(0.7, 0.8),
+    strip.text = element_blank(),
+    strip.background = element_blank(),
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black")
+  )
+
+#lower
+
+wrap_plots(higher, lower, nrow = 2)
+
+ggsave("../Results/Concentration.svg", height = 3.8, width = 3)
+ggsave("../Results/Concentration.png", height = 3.8, width = 3)
+```
+
+# Correlation between cell size and conc? 
+## Long to wide
+```{r}
+conc_wide <- conc_tidy %>%
+  select(-fmol) %>% 
+  spread(Compound, mM)
+
+head(conc_wide)
+```
+
+## Correlations
+```{r}
+cor.test(conc_wide$Volume_pL, conc_wide$AHVB)
+cor.test(conc_wide$Volume_pL, conc_wide$Catharanthine)
+cor.test(conc_wide$Volume_pL, conc_wide$Vindoline)
+cor.test(conc_wide$Volume_pL, conc_wide$Vinblastine)
+cor.test(conc_wide$Volume_pL, conc_wide$Serpentine)
+```
+
+

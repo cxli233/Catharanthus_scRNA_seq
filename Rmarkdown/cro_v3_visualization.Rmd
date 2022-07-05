@@ -1,0 +1,575 @@
+---
+title: "cro_v3_visualizations"
+author: "Chenxin Li"
+date: "4/29/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+
+library(svglite)
+
+library(patchwork)
+library(cowplot)
+```
+
+# Subset gene gff files 
+```{r}
+cro_v3_gff3 <- read_delim("../Data/cro_v3_anno/cro_v3.gene_models.repr.gff3",
+                          col_names = F, delim = "\t", col_types = cols())
+
+head(cro_v3_gff3)
+```
+```{r}
+cro_v3_genes_bed <- cro_v3_gff3 %>%
+  filter(X3 == "mRNA") %>% 
+  select(X1, X4, X5) %>% 
+  filter(str_detect(X1, "Chr"))
+
+head(cro_v3_genes_bed)  
+```
+```{r}
+write_delim(cro_v3_genes_bed, "../Results/R_outputs/cro_v3_genes.bed", 
+            col_names = F, delim = "\t")
+```
+
+
+# Sort repeat gff3
+```{r}
+cro_v3_rep_gff3 <- read_delim("../Data/cro_v3.final_asm.fa.out_rep.gff",
+                          col_names = F, delim = "\t", col_types = cols())
+
+head(cro_v3_rep_gff3)
+```
+## Split into long and short ones? 
+
+### Size distribution 
+```{r}
+cro_v3_rep_gff3 %>% 
+  mutate(length = X5- X4) %>% 
+  summarise(
+    LL = quantile(length, 0.025),
+    Q1 = quantile(length, 0.25),
+    Q2 = median(length),
+    Q3 = quantile(length, 0.75),
+    UL = quantile(length, 0.975)
+  )
+```
+Half of the repeat masked sequences are < 210-bp
+75% of the repeat masked sequences are < 500-bp 
+
+```{r}
+cro_v3_rep_gff3 %>% 
+  mutate(length = X5- X4) %>% 
+  ggplot(aes(x = length)) +
+  geom_histogram(bins = 100) +
+  #geom_density() +
+  scale_x_log10() +
+  theme_classic()
+```
+Most of the repeats are within 100 - 1000 bp 
+
+```{r}
+cro_v3_rep_gff3_sorted <- cro_v3_rep_gff3 %>% 
+  arrange(X1, X4, X5) %>% 
+  select(X1, X4, X5) %>% 
+  filter(str_detect(X1, "Chr"))
+
+head(cro_v3_rep_gff3_sorted)
+```
+### 50-100
+```{r}
+cro_v3_rep_gff3_sorted_small <- cro_v3_rep_gff3 %>% 
+  mutate(length = X5 - X4) %>%
+  filter(length > 50 & length < 100) %>% 
+  arrange(X1, X4, X5) %>% 
+  select(X1, X4, X5) %>% 
+  filter(str_detect(X1, "Chr"))
+
+head(cro_v3_rep_gff3_sorted_small)
+```
+
+### 101-1000
+```{r}
+cro_v3_rep_gff3_sorted_mid <- cro_v3_rep_gff3 %>% 
+  mutate(length = X5 - X4) %>%
+  filter(length > 101 & length < 1000) %>% 
+  arrange(X1, X4, X5) %>% 
+  select(X1, X4, X5) %>% 
+  filter(str_detect(X1, "Chr"))
+
+head(cro_v3_rep_gff3_sorted_mid)
+```
+
+### 1000 + 
+```{r}
+cro_v3_rep_gff3_sorted_large <- cro_v3_rep_gff3 %>% 
+  mutate(length = X5 - X4) %>%
+  filter(length > 1000) %>% 
+  arrange(X1, X4, X5) %>% 
+  select(X1, X4, X5, X9) %>% 
+  filter(str_detect(X1, "Chr"))
+
+head(cro_v3_rep_gff3_sorted_large)
+```
+
+```{r}
+write_delim(cro_v3_rep_gff3_sorted, "../Results/R_outputs/cro_v3_rep.bed", 
+            col_names = F, delim = "\t")
+```
+
+```{r}
+write_delim(cro_v3_rep_gff3_sorted_small, "../Results/R_outputs/cro_v3_rep_small.bed", 
+            col_names = F, delim = "\t")
+
+write_delim(cro_v3_rep_gff3_sorted_mid, "../Results/R_outputs/cro_v3_rep_mid.bed", 
+            col_names = F, delim = "\t")
+
+write_delim(cro_v3_rep_gff3_sorted_large, "../Results/R_outputs/cro_v3_rep_large.bed", 
+            col_names = F, delim = "\t")
+```
+
+
+# Load 1 Mb window coverage files 
+```{r}
+gene_1m <- read_delim("../Results/Bash_Results/cro.gene.cov.bedgraph",
+                      delim = "\t", col_names = F, col_types = cols()) 
+
+head(gene_1m)
+```
+```{r}
+rep_1m <- read_delim("../Results/Bash_Results/cro.rep.cov.bedgraph",
+                      delim = "\t", col_names = F, col_types = cols()) 
+
+head(rep_1m)
+```
+```{r}
+rep_1m_small <- read_delim("../Results/Bash_Results/cro.rep_small.cov.bedgraph",
+                      delim = "\t", col_names = F, col_types = cols()) 
+
+rep_1m_mid <- read_delim("../Results/Bash_Results/cro.rep_mid.cov.bedgraph",
+                      delim = "\t", col_names = F, col_types = cols()) 
+
+rep_1m_large <- read_delim("../Results/Bash_Results/cro.rep_large.cov.bedgraph",
+                      delim = "\t", col_names = F, col_types = cols()) 
+```
+
+# Plot v3 chr view 
+## genes
+```{r}
+genes <- gene_1m %>% 
+  ggplot(aes(x = X2, y = X4)) +
+  facet_grid(.~ X1, scales = "free_x", space = "free", switch = "x") +
+  geom_bar(aes(fill =  X4), stat = "identity") +
+  scale_fill_gradientn(colors = viridis(n = 10, option = "A")[1:9],
+                    breaks = c(50, 100),
+                    # labels = c("low", "high")
+                    ) +
+  labs(fill = NULL,
+       x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "right",
+        text = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        panel.grid = element_blank(),
+        strip.placement = "outside",
+        panel.border = element_rect(fill = NA, size = 1 ),
+        panel.spacing = unit(1, "lines"),
+        legend.key.height = unit(0.8, "lines"),
+        title = element_text(size = 10)) +
+  ggtitle("Genes")
+
+genes 
+```
+
+## Repeats
+### all 
+```{r}
+rep_1m %>% 
+  ggplot(aes(x = X2, y = X4)) +
+  facet_grid(.~ X1, scales = "free_x", space = "free", switch = "x") +
+  geom_bar(aes(fill =  X4), stat = "identity") +
+  scale_fill_gradientn(colors = viridis(n = 10, option = "D")[1:9]) +
+  labs(fill = "Repeats",
+       x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "right",
+        text = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        panel.grid = element_blank(),
+        strip.placement = "outside",
+        panel.border = element_rect(fill = NA, size = 1 ),
+        panel.spacing = unit(1, "lines"),
+        legend.key.height = unit(0.8, "lines"))
+```
+
+### Small
+```{r}
+small_reps <- rep_1m_small %>% 
+  ggplot(aes(x = X2, y = X4)) +
+  facet_grid(.~ X1, scales = "free_x", space = "free", switch = "x") +
+  geom_bar(aes(fill =  X4), stat = "identity") +
+  scale_fill_gradientn(colors = viridis(n = 10, option = "D")[1:9]) +
+  labs(fill = "Repetivie sequences (50-100-bp)",
+       x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        text = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        panel.grid = element_blank(),
+        strip.placement = "outside",
+        panel.border = element_rect(fill = NA, size = 1 ),
+        panel.spacing = unit(1, "lines"),
+        #legend.key.height = unit(0.5, "lines"),
+        title = element_text(size = 10)) +
+  ggtitle("Repetive sequences (50-100-bp)")
+
+small_reps
+```
+
+
+### Mid
+```{r}
+mid_size_reps <- rep_1m_mid %>% 
+  ggplot(aes(x = X2, y = X4)) +
+  facet_grid(.~ X1, scales = "free_x", space = "free", switch = "x") +
+  geom_bar(aes(fill =  X4), stat = "identity") +
+  scale_fill_gradientn(colors = viridis(n = 10, option = "D")[1:9]) +
+  labs(fill = "Repetive sequences (100-1000-bp)",
+       x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        text = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        panel.grid = element_blank(),
+        strip.placement = "outside",
+        panel.border = element_rect(fill = NA, size = 1 ),
+        panel.spacing = unit(1, "lines"),
+        legend.key.height = unit(0.5, "lines"),
+        title = element_text(size = 10)) +
+  ggtitle("Repetive sequences (100-1000-bp)")
+
+mid_size_reps
+```
+
+### Large
+```{r}
+large_reps <- rep_1m_large %>% 
+  ggplot(aes(x = X2, y = X4)) +
+  facet_grid(.~ X1, scales = "free_x", space = "free", switch = "x") +
+  geom_bar(aes(fill =  X4), stat = "identity") +
+  scale_fill_gradientn(colors = viridis(n = 10, option = "D")[1:9],
+                       breaks = c(100, 300)) +
+  labs(fill = NULL,
+       x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(legend.position = "right",
+        text = element_text(size = 14, face = "bold"),
+        axis.text = element_blank(),
+        panel.grid = element_blank(),
+        strip.placement = "outside",
+        panel.border = element_rect(fill = NA, size = 1 ),
+        panel.spacing = unit(1, "lines"),
+        legend.key.height = unit(0.8, "lines"),
+        title = element_text(size = 10)) +
+  ggtitle("Repetive sequences (>1-kp)")
+
+large_reps
+```
+
+## Put graphs together 
+```{r}
+#wrap_plots(genes, small_reps, mid_size_reps, large_reps, 
+#           nrow = 4)
+
+#ggsave("../Results/R_outputs/Chr_view_all.svg", width = 7, height = 6.5)
+#ggsave("../Results/R_outputs/Chr_view_all.png", width = 7, height = 6.5)
+```
+
+```{r}
+wrap_plots(genes, large_reps + ggtitle("Repetitive sequences"), 
+           nrow = 2)
+
+ggsave("../Results/R_outputs/Chr_view_gene_large_rep.svg", width = 7, height = 3)
+ggsave("../Results/R_outputs/Chr_view_gene_large_rep.png", width = 7, height = 3)
+```
+## Correlation among gene and repeats 
+```{r}
+counts_wide <- bind_rows(
+  gene_1m %>% 
+    mutate(type = "gene"),
+  rep_1m_small %>% 
+    mutate(type = "small rep"),
+  rep_1m_mid %>% 
+    mutate(type = "mid rep"),
+  rep_1m_large %>% 
+    mutate(type = "large rep"),
+) %>% 
+  spread(type, X4)
+
+head(counts_wide)
+```
+```{r}
+cor(counts_wide[, 4:7])
+
+model_gene_rep <- lm(gene ~ `large rep`, data = counts_wide)
+summary(model_gene_rep)
+```
+```{r}
+counts_wide %>% 
+  ggplot(aes(x = gene, y = `large rep`)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  theme_classic()
+```
+
+ 
+
+
+# Load v3 and v2 comparison table
+```{r}
+v2_v3 <- read_excel("../Data/cro_v2_v3_simplified.xlsx")
+head(v2_v3)
+```
+```{r}
+v2_v3_tidy <- v2_v3 %>% 
+  select(-`BUSCO String (genome)`) %>% 
+  gather("metric", "value", 2:8)  %>% 
+  mutate(Version = case_when(
+    str_detect(version, "v2") ~ "v2",
+    str_detect(version, "v3") ~ "v3"
+  )) %>% 
+  filter(metric != "Min Scaffold Length") %>% 
+  filter(metric != "Max Scaffold Length") %>%
+  filter(metric != "Total Gap Length (Mb)") %>%
+   mutate(value2 = case_when(
+     str_detect(metric, "Length") ~ value/1e6,
+     T ~ value
+   )) %>% 
+  mutate(value3 = case_when(
+     str_detect(metric, "Length") ~ as.character(signif(value/10^6, 3)),
+     str_detect(metric, "Num of Gaps") &
+       str_detect(Version, "v3") ~ "185/310",
+     str_detect(metric, "Num of Scaffolds") &
+       str_detect(Version, "v3") ~ "8/188",
+     T ~ as.character(value)
+   )) %>% 
+  mutate(Units = case_when(
+   str_detect(metric, "Length") ~ " Mb",
+   T ~ ""
+   )) 
+
+v2_v3_tidy
+```
+
+# Plot v3 and v2 comparison 
+```{r}
+v2_v3_tidy %>% 
+  ggplot(aes(x = Version, y = value2)) +
+  facet_wrap(~metric, scales = "free") +
+  geom_bar(stat = "identity", alpha = 0.8, width = 0.5,
+           aes(fill = Version)) +
+  geom_text(aes(label = paste0(
+    value3, Units
+  )), 
+  y = 0, hjust = -0.1, size = 3.5) +
+  scale_fill_manual(values = c("grey60", "slateblue2")) +
+  labs(y = "Assembly version",
+       x = NULL) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black"),
+    axis.text.x = element_text(size = 8, hjust = 0.6),
+    legend.position = "none",
+    panel.spacing.x = unit(1, "lines"),
+    strip.background = element_blank()
+  ) +
+  coord_flip()
+  
+
+ggsave("../Results/R_outputs/v2_v3_comparisons.svg", bg = "white", height = 3.5, width = 4.5)
+ggsave("../Results/R_outputs/v2_v3_comparisons.png", bg = "white", height = 3.5, width = 4.5)
+```
+
+# Enrichment at target region for adaptive finsihing 
+## Load data 
+```{r}
+CRO_bed <- read_delim("../../AdaptiveSequencing/Results/CRO.ont_asm.scaffolds.bed", delim =  "\t", 
+                      col_names = F, col_types = cols())
+head(CRO_bed)
+
+per.base.cov <- read_delim("../../AdaptiveSequencing/Results/Per.base.cov.txt",
+                            delim = "\t", col_names = F, col_types = cols()) 
+
+head(per.base.cov)
+```
+
+## Wrangle data 
+```{r}
+tag <- c(
+  "Target_5-kb",
+  "Target_30-kb",
+  "Non-target_5-kb",
+  "Non-target_30-kb"
+)
+
+per.base.cov_nice <- per.base.cov %>% 
+  cbind(tag) %>% 
+  rename(per.bp.coverage = X1) %>% 
+  separate(tag, c("Type", "Ends"), sep = "_") %>% 
+  mutate(targeting_percent = case_when(
+    Ends == "5-kb" ~ 
+      ((CRO_bed %>% filter(X3 > 10000) %>% nrow())*5000*2 + 3053980) / (7.1*10^6),
+    Ends == "30-kb" ~
+      ((CRO_bed %>% filter(X3 > 60000) %>% nrow())*30000*2 + 8448365) / (7.1*10^6)
+  )) %>% 
+  mutate(Ends_nice = paste0("targeted ", Ends, " ends", 
+                            "\n(", signif(targeting_percent, 2), 
+                            "% of genome)"
+                           )) %>% 
+  mutate(Ends_nice = factor(Ends_nice, levels = c(
+    "targeted 5-kb ends\n(0.99% of genome)", 
+    "targeted 30-kb ends\n(2.5% of genome)"
+  ))) %>% 
+  mutate(text_y = case_when(
+    str_detect(Ends_nice, "5-kb") ~ 38,
+    T ~ 48 
+  ))
+
+head(per.base.cov_nice)
+
+per.base.cov_s <- per.base.cov_nice %>% 
+  select(per.bp.coverage, Ends_nice, Type) %>% 
+  spread(Type, per.bp.coverage) %>% 
+  mutate(enrichment = Target / `Non-target`) %>% 
+  mutate(enrichment.text = paste(
+    signif(enrichment, 2), "-fold", sep = ""
+  )) %>% 
+  mutate(Ends_nice = factor(Ends_nice, levels = c(
+    "targeted 5-kb ends\n(0.99% of genome)", 
+    "targeted 30-kb ends\n(2.5% of genome)"
+  ))) %>% 
+  mutate(text_y = case_when(
+    str_detect(Ends_nice, "5-kb") ~ 38,
+    T ~ 48 
+  ))
+
+head(per.base.cov_s)
+```
+
+## Plot 
+```{r}
+per.base.cov_nice %>% 
+  ggplot(aes(x = Type, y = per.bp.coverage)) +
+  facet_grid(. ~ Ends_nice, switch = "x") + 
+  geom_bar(stat = "identity", alpha = 0.8, width = 0.7, 
+           aes(fill = Type)) + 
+  geom_text(aes(label = signif(per.bp.coverage,3)), 
+                vjust = -0.1, size = 3, fontface = "bold") +
+  geom_segment(x = 1, xend = 2, aes(y = text_y, yend = text_y), 
+               size = 1.1) +
+  geom_text(data = per.base.cov_s, aes(label = enrichment.text, y = text_y),
+            x = 1.5, vjust = -0.3, size = 3, fontface = "bold") +
+  scale_fill_manual(values = c("grey65", "slateblue2")) +
+  labs(x = "Length of ends\nfrom each contig",
+       y = "Average per bp coverage",
+       fill = NULL) +
+  theme_minimal() +
+  theme(panel.grid = element_blank(),
+        panel.spacing = unit(1, "line"),
+        axis.line = element_line(size = 1.1),
+        strip.placement = "outside",
+        axis.text.x = element_blank(),
+        legend.position = "top",
+        legend.direction = "horizontal",
+        text = element_text(size = 14, face = "bold", color = "black"),
+        axis.text = element_text(color = "black"))
+
+ggsave("../Results/R_outputs/enrichment_at_target.svg", width = 3.75, height = 4)
+ggsave("../Results/R_outputs/enrichment_at_target.png", width = 3.75, height = 4)
+```
+
+# Gap size distribution 
+## How many gaps left in the chromosome?
+```{r}
+Gap_bed <- read_delim("../Data/cro_v3.final_asm.gaps.bed",
+                      delim = "\t", col_names = F, col_types = cols())
+
+head(Gap_bed)
+```
+```{r}
+Gap_bed %>% 
+  group_by(X1) %>% 
+  count() %>% 
+  filter(str_detect(X1, "Chr")) %>% 
+  ungroup() %>% 
+  summarise(total = sum(n))
+```
+## Load filled gaps 
+```{r}
+gap_filled <- read_excel("../Data/cro_v3_dentist_gap_fill_summary.xlsx")
+head(gap_filled)
+
+dim(gap_filled)
+```
+
+14 gaps filled by adaptive finishing 
+
+## Plot 
+```{r}
+gap_filled %>% 
+  ggplot(aes(x = " ", y = actual_gap_size)) +
+  ggbeeswarm::geom_quasirandom(aes(size = adaptive_read_cov),
+                               shape = 21, color = "white", alpha = 0.8,
+                                fill = brewer.pal(11, "RdBu")[2]) +
+  labs(x = NULL,
+       y = "Adaptive finishing\nfilled gap size (bp)",
+       size = "Coverage",
+       caption = paste0(
+         "min = ", min(gap_filled$actual_gap_size), "-bp\n",
+         "max = ", max(gap_filled$actual_gap_size)/1000, "-kb\n",
+         "mean = ", signif(mean(gap_filled$actual_gap_size)/1000, 2), "-kb\n",
+         "median = ", median(gap_filled$actual_gap_size), "-bp\n"
+       )) +
+  scale_y_log10() +
+  scale_size_area(max_size = 6, limits = c(10, 180)) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black"),
+    legend.position = "right",
+    plot.caption = element_text(hjust = 0)
+  ) +
+  annotation_logticks(sides = "l")
+
+ggsave("../Results/R_outputs/Gap_size_filled.svg", height = 4, width = 3.5, bg = "white")
+ggsave("../Results/R_outputs/Gap_size_filled.png", height = 4, width = 3.5, bg = "white")
+```
+
+```{r}
+10^(mean(log10(gap_filled$actual_gap_size)))
+```
+
+geometric mean is 283-bp 

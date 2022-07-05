@@ -1,0 +1,1220 @@
+---
+title: "SingleCellMetabolites"
+author: "Chenxin Li"
+date: "6/30/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(umap)
+library(dynamicTreeCut)
+library(igraph)
+library(ggraph)
+library(readxl)
+library(RColorBrewer)
+library(viridis)
+library(svglite) 
+library(patchwork)
+library(cowplot)
+```
+
+
+# Data 
+```{r}
+Corrected_Areas_clean <- read_csv("../Data/Last_attempt/Corrected_Areas_clean_1e5_last.csv")
+
+Corrected_Areas_clean <- Corrected_Areas_clean %>% 
+  rename(feature = `...1`)
+
+head(Corrected_Areas_clean)
+```
+
+```{r}
+Corrected_Areas_clean %>% 
+  filter(str_detect(feature, "[a-z]"))
+```
+
+# Log Normalize and assign plate ID 
+```{r}
+Area_long <- Corrected_Areas_clean %>% 
+  gather("cell", "area", 2:ncol(Corrected_Areas_clean)) %>% 
+  filter(str_detect(cell, "QC") == F) %>% 
+  mutate(log_Area = log10(area + 1)) %>% 
+  mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  ))
+
+head(Area_long)
+```
+
+```{r}
+Area_long %>% 
+  group_by(feature, Plate) %>% 
+  filter(feature == "Secologanin") %>% 
+  count() %>% 
+  arrange(Plate)  %>% 
+  ungroup() 
+
+Area_long %>% 
+  group_by(feature, Plate) %>% 
+  filter(feature == "Secologanin") %>% 
+  count() %>% 
+  arrange(Plate)  %>% 
+  ungroup() %>% 
+  summarise(total = sum(n))
+```
+
+552 total cells 
+
+
+## Check distribution 
+```{r}
+Area_long_s <- Area_long %>% 
+  filter(area > 0) %>%
+  group_by(Plate) %>% 
+  summarise(
+    mean = mean(log_Area),
+    sd = sd(log_Area)
+  )
+
+Area_long_s
+```
+
+```{r}
+Area_long %>% 
+  filter(area > 0) %>% 
+  ggplot(aes(x = log_Area)) +
+  facet_grid(Plate ~., scales = "free_y") +
+  geom_histogram(bins = 100, alpha = 0.8, color = "white", fill = "grey20") +
+  geom_vline(data = Area_long_s, aes(xintercept = mean), 
+             size = 1, color = "tomato1", alpha = 0.8) +
+  labs(x = "log10 Area",
+       y = "non-zero occurrences") +
+  theme_classic() +
+  theme(
+    panel.spacing = unit(1, "lines")
+  )
+
+ggsave("../Results/R_outputs_multiplate/hist_by_batch_5e4.svg", height = 7, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/hist_by_batch_5e4.png", height = 7, width = 5, bg = "white")
+```
+
+
+```{r}
+Area_long %>% 
+  group_by(Plate) %>% 
+  filter(area == 0) %>% 
+  count()
+```
+
+# Without batch correction
+## Standardize together  
+```{r}
+Area_long <- Area_long %>% 
+  group_by(feature) %>% 
+  mutate(z = (log_Area - mean(log_Area))/sd(log_Area)) %>% 
+  filter(is.na(z) == F) %>% 
+  ungroup()
+
+head(Area_long)
+```
+## PCA 
+```{r}
+Area_z_wide <- Area_long %>% 
+  select(feature, cell, z) %>%
+  spread(cell, z) %>% 
+  as.data.frame()
+
+row.names(Area_z_wide) <- Area_z_wide$feature
+
+head(Area_z_wide)
+```
+```{r}
+pc <- prcomp(t(Area_z_wide[, -1])) 
+```
+
+```{r}
+pc$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  ggplot(aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = Plate)) +
+  theme_bw()
+
+ggsave("../Results/R_outputs_multiplate/PCA1_5e4.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/PCA1_5e4.png", height = 4, width = 5, bg = "white")
+```
+
+# Batch correction
+## select features
+```{r}
+Common_features <- Area_long %>% 
+  group_by(feature, Plate) %>% 
+  summarise(mean.area = mean(area)) %>% 
+  filter(mean.area > 0) %>% 
+  count() %>% 
+  filter(n >= 7)
+
+nrow(Common_features)
+head(Common_features)
+```
+
+Dimension reduction using 932 commonly detected features 
+
+```{r}
+feature_detect_bar <- Area_long %>% 
+  group_by(feature, Plate) %>% 
+  summarise(mean.area = mean(area)) %>% 
+  filter(mean.area > 0) %>% 
+  count() %>% 
+  rename(detected_in = n) %>% 
+  ungroup() %>% 
+  group_by(detected_in) %>% 
+  count() %>% 
+  ggplot(aes(x = detected_in, y = n)) +
+  geom_bar(stat = "identity", alpha = 0.8, width = 0.7) +
+  scale_x_continuous(breaks = c(1, 2, 3, 4, 5, 6, 7)) +
+  labs(x = "Detected in how many batches",
+       y = "No. of features") +
+  theme_classic()
+
+feature_detect_bar
+```
+
+
+
+```{r}
+feature_detect_bee <- Area_long %>% 
+  filter(area > 0) %>% 
+  group_by(feature) %>% 
+  summarise(mean.log.area = mean(log_Area)) %>% 
+  inner_join(
+    Area_long %>% 
+      group_by(feature, Plate) %>% 
+      summarise(mean.area = mean(area)) %>% 
+      filter(mean.area > 0) %>% 
+      count(), 
+    by = "feature"
+  ) %>% 
+  ggplot(aes(x = n , y = mean.log.area)) +
+  ggbeeswarm::geom_quasirandom(alpha = 0.8) +
+  stat_summary(geom = "point", fun = mean, color = "tomato1", size = 3) +
+  scale_x_continuous(breaks = c(1, 2, 3, 4, 5, 6, 7)) +
+  labs(x = NULL,
+       y = "log10 peak area\n(only non zero peaks are shown)",
+       title = "Red = mean of non-zero peaks") +
+  theme_classic() +
+  theme(plot.title = element_text(size = 10))
+
+feature_detect_bee 
+
+wrap_plots(feature_detect_bee, feature_detect_bar, nrow = 2)
+
+ggsave("../Results/R_outputs_multiplate/feature_detection_5e4.svg", height = 5, width = 3, bg = "white")
+ggsave("../Results/R_outputs_multiplate/feature_destection_5e4.png", height = 5, width = 3, bg = "white")
+```
+
+Commonly detected features also have the highest mean log area (for non-zero values). 
+
+## Standardize by feature and batch
+```{r}
+Area_long_batch <- Area_long %>% 
+  filter(feature %in% Common_features$feature) %>%  
+  # select only features commonly detected in all batches 
+  group_by(feature, Plate) %>% 
+  mutate(z = (log_Area - mean(log_Area))/sd(log_Area)) %>% 
+  ungroup()
+
+head(Area_long_batch)
+```
+
+
+## Check distribution again 
+```{r}
+Area_long_batch_s <- Area_long_batch %>% 
+  filter(area > 0) %>%
+  group_by(Plate) %>% 
+  summarise(
+    mean.z = mean(z),
+    sd.z = sd(z)
+  )
+
+Area_long_batch_s
+```
+
+```{r}
+Area_long_batch %>% 
+  filter(area > 0) %>% 
+  ggplot(aes(x = z)) +
+  facet_grid(Plate ~., scales = "free_y") +
+  geom_histogram(bins = 100, alpha = 0.8, color = "white", fill = "grey20") +
+  #geom_vline(data = Area_long_s, aes(xintercept = mean), 
+   #          size = 1, color = "tomato1", alpha = 0.8) +
+  labs(x = "z score",
+       y = "non-zero occurrences") +
+  theme_classic() +
+  theme(
+    panel.spacing = unit(1, "lines")
+  )
+```
+
+## PCA
+```{r}
+Area_z_wide_batch <- Area_long_batch %>% 
+  select(feature, cell, z) %>%
+  spread(cell, z) %>% 
+  as.data.frame()
+
+row.names(Area_z_wide_batch) <- Area_z_wide_batch$feature
+
+head(Area_z_wide_batch)
+```
+
+```{r}
+pc_batch <- prcomp(t(Area_z_wide_batch[, -1])) 
+```
+
+```{r}
+pc_batch$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  ggplot(aes(x = PC1, y = PC2)) +
+  geom_point(aes(color = Plate)) +
+  theme_bw()
+
+ggsave("../Results/R_outputs_multiplate/PCA_batch_5e4.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/PCA_batch_5e4.png", height = 4, width = 5, bg = "white")
+```
+```{r}
+pc_batch$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  inner_join(
+   Area_long %>% 
+   filter(feature == "Serpentine") %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  ggplot(aes(x = PC1, y = PC2)) +
+  geom_point(aes(fill = z), shape = 21, alpha = 0.8 , size = 3) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  theme_bw() +
+  ggtitle("Serpentine") 
+```
+
+### Correlate each feature to each PC
+```{r}
+feature_by_cell <- Area_long_batch %>% 
+  select(cell, feature, z) %>% 
+  spread(feature, z) %>% 
+  as.data.frame()
+
+row.names(feature_by_cell) <- feature_by_cell$cell
+
+head(feature_by_cell)
+
+#head(pc_batch$x)
+```
+
+```{r}
+feature_by_cell %>% 
+  ggplot(aes(x = Serpentine, y = Secologanin)) +
+  geom_point(alpha = 0.5) +
+  labs(x = "Serpentine z score",
+       y = "Secologanin z score") +
+  theme_classic()
+```
+
+
+```{r}
+feature_PC_cor <- function(feature){
+  cor(feature, pc_batch$x)
+}
+```
+
+```{r}
+feature_by_PC <- apply(X = feature_by_cell[, -1], FUN = feature_PC_cor, MARGIN = 2)
+# slow step 
+```
+
+```{r}
+feature_by_PC_df <- feature_by_PC %>% 
+  as.data.frame() %>% 
+  mutate(index = 1:nrow(feature_by_PC)) %>% 
+  mutate(PC = paste0("PC", index)) %>% 
+  gather("feature", "r", 1:nrow(Common_features))
+
+head(feature_by_PC_df)
+```
+
+ 
+
+
+### Make heat map 
+```{r}
+feature_by_PC_df %>% 
+  filter(index <= 50) %>% 
+  filter(str_detect(feature, "[a-z]")) %>% 
+  mutate(Rows = case_when(
+    str_detect(feature, "Sec|Akua|Loga|Epi") ~ 1, 
+    T ~ 2
+  )) %>% 
+  mutate(feature = reorder(feature, Rows)) %>% 
+  #mutate(PC = reorder(PC, index)) %>% 
+  ggplot(aes(x = index, y = feature)) +
+  geom_tile(aes(fill = r)) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")),
+                       limits = c(-0.8, 0.8),
+                       breaks = c(-0.5, 0, 0.5)) +
+  labs(x = "PC",
+       y = NULL) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.text.y = element_text(hjust = 0.5)
+  )
+
+ggsave("../Results/R_outputs_multiplate/feature_vs_PC_5e4.svg", height = 5, width = 7, bg = "white")
+ggsave("../Results/R_outputs_multiplate/feature_vs_PC_5e4.png", height = 5, width = 7, bg = "white")
+```
+I could have just project PC4 and PC11(?)  
+
+```{r}
+ordering_features <- feature_by_PC_df %>% 
+  filter(index <= 50) %>% 
+  group_by(feature) %>% 
+  slice_max(n = 1, order_by = abs(r)) %>% 
+  arrange(index) %>% 
+  rename(max.index = index) %>% 
+  ungroup() %>% 
+  group_by(max.index) %>% 
+  arrange(r, .by_group = T) %>% 
+  #mutate(rank1 = rank(r, ties.method = "first")) %>% 
+  mutate(order = max.index+1 - r) %>% 
+  select(-PC, -r) %>% 
+  ungroup()
+
+ordering_features
+```
+
+```{r}
+feature_by_PC_df %>% 
+  filter(index <= 50) %>% 
+  inner_join(ordering_features, by = "feature") %>% 
+  mutate(feature = reorder(feature, -order)) %>% 
+  arrange(r, .by_group = T) %>% 
+  ggplot(aes(x = index, y = feature)) +
+  geom_tile(aes(fill = r)) +
+  scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu")),
+                       limits = c(-0.9, 0.9),
+                       breaks = c(-0.5, 0, 0.5)) +
+  labs(x = "PC",
+       y = NULL) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    axis.text.y = element_blank()
+  )
+
+ggsave("../Results/R_outputs_multiplate/feature_vs_PC_big_5e4.svg", height = 16, width = 16, bg = "white")
+ggsave("../Results/R_outputs_multiplate/feature_vs_PC_big_5e4.png", height = 16, width = 16, bg = "white")
+```
+
+
+## Elbow plot
+```{r}
+pc_importance <- as.data.frame(t(summary(pc_batch)$importance))
+pc_importance
+```
+
+```{r}
+elbow <- pc_importance %>%
+  mutate(PC = row.names(.)) %>% 
+  mutate(PC = reorder(PC, -`Proportion of Variance`)) %>% 
+  ggplot(aes(x = 1:nrow(pc_importance), y = `Proportion of Variance`)) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, 
+             color = "white", fill = "grey20") +
+  labs(x = "PC") +
+  theme_classic()
+
+cumu <- pc_importance %>%
+  mutate(PC = row.names(.)) %>% 
+  mutate(PC = reorder(PC, -`Proportion of Variance`)) %>% 
+  ggplot(aes(x = 1:nrow(pc_importance), y = `Cumulative Proportion`)) +
+  geom_point(size = 3, alpha = 0.8, shape = 21, 
+             color = "white", fill = "grey20") +
+  labs(x = "PC") +
+  theme_classic()
+
+wrap_plots(elbow, cumu, 
+           design = "A
+                     B")
+
+ggsave("../Results/R_outputs_multiplate/PCA_initiation_5e4.svg", height = 6, width = 3)
+ggsave("../Results/R_outputs_multiplate/PCA_initiation_5e4.png", height = 6, width = 3)
+```
+### Enchanced PCA plots 
+```{r}
+PCA_serp <- pc_batch$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  inner_join(
+   Area_long_batch %>% 
+   filter(feature == "Serpentine") %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  ggplot(aes(x = PC4, y = PC11)) +
+  geom_point(aes(fill = z), shape = 21, alpha = 0.8 , size = 2) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 2)) +
+  labs(y = "\nPC11") +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        legend.position = "bottom") +
+  ggtitle("Serpentine")
+
+PCA_serp
+
+ggsave("../Results/R_outputs_multiplate/PCA_Serp_5e4.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/PCA_Serp_5e4.png", height = 4, width = 5, bg = "white")
+```
+
+```{r}
+PCA_sec <- pc_batch$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  inner_join(
+   Area_long_batch %>% 
+   filter(feature == "Secologanin") %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  ggplot(aes(x = PC4, y = PC11)) +
+  geom_point(aes(fill = z), shape = 21, alpha = 0.8 , size = 2) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 12),
+        legend.position = "bottom") +
+  ggtitle("Secologanin")
+
+PCA_sec
+
+ggsave("../Results/R_outputs_multiplate/PCA_Sec_5e4.svg", height = 4, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/PCA_Sec_5e4.png", height = 4, width = 5, bg = "white")
+```
+
+
+
+PC4 separates idioblast from everything  else
+
+```{r}
+wrap_plots(PCA_sec, PCA_serp,
+           nrow = 1)
+
+ggsave("../Results/R_outputs_multiplate/PCA_separation.svg", height = 3.5, width = 6, bg = "white")
+ggsave("../Results/R_outputs_multiplate/PCA_separation.png", height = 3.5, width = 6, bg = "white")
+```
+
+
+# Supervised classification 
+```{r}
+pc_batch$x %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  inner_join(
+   Area_long_batch %>% 
+   #filter(feature == "Secologanin") %>% 
+   filter(str_detect(feature, "Sec")) %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  ggplot(aes(x = PC27, y = z)) +
+  geom_point() +
+  theme_classic()
+```
+```{r}
+cell_classification <- feature_by_cell %>% 
+  #filter(str_detect(feature, "[a-z]")) %>% 
+  #filter(feature %in% common_31$feature) %>% 
+  mutate(cell_type = case_when(
+    Secologanin > 1 & 
+      Serpentine < 1 ~ "epidermis",
+    Serpentine > 1 ~ "idioblast",
+    T ~ "other"
+  )) %>% 
+    select(cell, cell_type)
+
+head(cell_classification)
+```
+```{r}
+Area_long_batch_cell_type <- Area_long %>% 
+  full_join(cell_classification, by = "cell")  
+
+head(Area_long_batch_cell_type)
+
+Area_long_batch_cell_type %>% 
+  filter(feature == "Secologanin") %>% 
+  group_by(cell_type) %>% 
+  count()
+```
+## plot
+```{r}
+ 
+
+Area_long_batch_cell_type %>% 
+  filter(str_detect(feature, "[a-z]")) %>%
+  filter(is.na(z) == F) %>% 
+  mutate(feature = case_when(
+    str_detect(feature, "_iminium") ~ "AHVB iminium",
+    str_detect(feature, "Anhydrovinblastine$") ~ "AHVB",
+    T ~ feature
+  )) %>% 
+  mutate(Rows = case_when(
+    str_detect(feature, "Loganic") ~ 1,
+    str_detect(feature, "Sec|Akua|Epi") ~ 2, 
+    str_detect(feature, "Catha") ~ 3,
+    str_detect(feature, "Vinblastine") ~ 5,
+    T ~ 4
+  )) %>% 
+  mutate(z2 = case_when(
+    z >= 3 ~ 3,
+    T ~ z
+  )) %>% 
+  filter(str_detect(feature, "Unk_|acet") == F) %>% 
+  mutate(feature = reorder(feature, -Rows)) %>% 
+  mutate(cell_type_2 = case_when(
+    str_detect(cell_type, "epi") ~ "E",
+    str_detect(cell_type, "idio") ~ "I",
+    T ~ "other"
+  )) %>% 
+  mutate(cell_type_2 = factor(cell_type_2, levels = c("E", "I", "other"))) %>% 
+  ggplot(aes(x = cell, y = feature)) +
+  facet_grid(.~cell_type_2, scales = "free_x", space = "free_x") +
+  geom_tile(aes(fill = z2)) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"), 
+                       breaks = c(0 ,3),
+                       labels = c("0", ">3")
+                       ) +
+  scale_x_discrete(label = NULL) +
+  labs(x = "Cell",
+       y = "Compound",
+       fill = "z score") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(color = "black", hjust = 0.5),
+    axis.ticks.x = element_blank(),
+    legend.position = "top"
+  )
+
+ggsave("../Results/R_outputs_multiplate/cell_heatmap_5e4.svg", height = 3.8, width = 5, bg = "white")
+ggsave("../Results/R_outputs_multiplate/cell_heatmap_5e4.png", height = 3.8, width = 5, bg = "white")
+```
+
+
+```{r}
+Area_long_batch_cell_type %>% 
+  filter(str_detect(feature, "[a-z]")) %>% 
+  group_by(feature) %>% 
+  count()
+```
+
+
+
+# UMAP 
+```{r}
+custom.config <- umap.defaults
+#custom.config$min_dist <- 0.5
+#custom.config$spread <- 2
+#custom.config$random_state <- 666
+#custom.config$knn <- 10
+
+run1.umap <- umap(pc_batch$x[, c(1:50)], config = custom.config)
+
+head(run1.umap$layout)
+
+```
+
+## Additional meta data 
+```{r}
+Cat_cells <- read_csv("../Data/Single_Cell_metabolomics/Cat_cells.csv")
+
+Cat_cells_long <- Cat_cells %>% 
+  gather("cell", "area", 3:ncol(Cat_cells))
+  
+
+head(Cat_cells_long)
+```
+```{r}
+suspected_idio <- read_excel("../Data/suspected_idioblast.xlsx")
+
+suspected_idio <- suspected_idio %>% 
+  mutate(cell = paste0(
+    str_replace(Cell, "Cell", "C"), "_", Plate
+  ))
+
+head(suspected_idio)
+```
+
+
+## graph 
+```{r}
+UMAP_by_Plate <- run1.umap$layout %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(color = Plate)) +
+  scale_color_manual(values = brewer.pal(7, "Set2")) +
+  guides(color = guide_legend(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "bottom"
+  )
+
+UMAP_by_Plate
+```
+
+
+```{r}
+UMAP_by_cat <- run1.umap$layout %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  mutate(Cat = case_when(
+    cell %in% Cat_cells_long$cell ~ "catharanthine",
+    T ~ "no catharanthine"
+  )) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(color = Cat)) +
+  scale_color_manual(values = c("tomato1", "grey70")) +
+  labs(color = NULL) +
+  theme_void() +
+  theme(
+    legend.position = "bottom"
+  )
+
+UMAP_by_cat
+```
+
+```{r}
+UMAP_by_morph <- run1.umap$layout %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  mutate(Idioblast = case_when(
+    cell %in% suspected_idio$cell ~ "likely idioblast",
+    T ~ "others"
+  )) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(color = Idioblast)) +
+  scale_color_manual(values = c("slateblue3", "grey70")) +
+  labs(color = NULL) +
+  theme_void() +
+  theme(
+    legend.position = "bottom"
+  )
+
+UMAP_by_morph
+```
+```{r}
+wrap_plots(UMAP_by_Plate, UMAP_by_cat, UMAP_by_morph, nrow = 1)
+
+ggsave("../Results/R_outputs_multiplate/UMAP_after_correction_5e4.png", width = 8, height = 4)
+ggsave("../Results/R_outputs_multiplate/UMAP_after_correction_5e4.svg", width = 8, height = 4)
+```
+```{r}
+UMAP_corrected <- run1.umap$layout %>% 
+  as.data.frame() %>% 
+  mutate(cell = row.names(.)) %>% 
+   mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) 
+```
+
+
+# Confusion matrix for serpentine vs. idioblast suspects
+```{r}
+number_of_cells <- ncol(Area_z_wide_batch) - 1
+
+Num.idioblast.suspect <-UMAP_corrected %>% 
+  filter(cell %in% suspected_idio$cell) %>% 
+  nrow()
+ 
+Num.sep.positive <-UMAP_corrected %>% 
+  inner_join(
+   Area_long_batch %>% 
+   filter(feature == "Serpentine") %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  filter(area > 1e4) %>% 
+  nrow()
+  
+Num.sep.positive_idioblast.sus <- UMAP_corrected %>% 
+  inner_join(
+   Area_long_batch %>% 
+   filter(feature == "Serpentine") %>% 
+   arrange(z),
+     by = c("cell", "Plate")
+  ) %>% 
+  filter(area > 0) %>% 
+  filter(cell %in% suspected_idio$cell) %>% 
+  nrow()
+
+confusion_matrix <- matrix(c(Num.sep.positive_idioblast.sus, 
+                             Num.idioblast.suspect - Num.sep.positive_idioblast.sus,
+                             Num.sep.positive - Num.sep.positive_idioblast.sus,
+                             number_of_cells - Num.idioblast.suspect - Num.sep.positive + Num.sep.positive_idioblast.sus), 
+                           nrow = 2, ncol = 2) 
+
+row.names(confusion_matrix) <- c("serpentine\ndetected", "serpentine\nnot detected")
+colnames(confusion_matrix) <- c("idioblast\nmorphology", "not idioblast\nmorphology")
+
+confusion_matrix
+
+fisher.test(confusion_matrix)
+```
+
+## Plot confusion matrix
+```{r}
+confusion_matrix %>% 
+  as.data.frame() %>% 
+  mutate(serpentine = row.names(confusion_matrix)) %>% 
+  gather("idioblast morphology", "count", 1:2) %>% 
+  mutate(`idioblast morphology` = fct_rev(`idioblast morphology`)) %>% 
+  ggplot(aes(y = `idioblast morphology`,
+             x = `serpentine`)) +
+  geom_tile(color = "black", size = 1, fill = NA) +
+  geom_text(aes(label = count)) +
+  scale_x_discrete(position = "top") +
+  labs(x = NULL,
+       y = NULL) +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text = element_text(color = "black", face = "bold"),
+    axis.text.y = element_text(hjust = 0.5)
+  )
+
+ggsave("../Results/R_outputs_multiplate/idioblast_confusion_matrix_5e4.svg", 
+       height = 2.5, width = 3, bg = "white")
+
+ggsave("../Results/R_outputs_multiplate/idioblast_confusion_matrix_5e4.png", 
+       height = 2.5, width = 3, bg = "white")
+```
+
+
+# Explore known compounds on UMAP 
+## Idioblast  
+```{r}
+AHVB <- Area_long %>% 
+  filter(feature == "Anhydrovinblastine") %>% 
+  arrange(z) %>% 
+  full_join(UMAP_corrected, by = c("cell", "Plate")) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = z,), 
+             alpha = 0.8, color = "grey20", shape = 21, size = 2) +
+  #scale_fill_manual(values = brewer.pal(3, "Accent")) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, color = "grey20")
+  ) +
+  ggtitle("Anhydrovinblastine")
+
+AHVB
+```
+
+```{r}
+SS <- Area_long %>% 
+  filter(feature == "Serpentine") %>% 
+  arrange(z) %>%
+  full_join(UMAP_corrected, by = c("cell", "Plate")) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = z), 
+             alpha = 0.8, color = "grey20", shape = 21, size = 2) +
+  #scale_fill_manual(values = brewer.pal(3, "Accent")) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, color = "grey20")
+  ) +
+  ggtitle("Serpentine")
+
+SS 
+```
+
+ 
+
+```{r}
+Precon <- Area_long %>% 
+  filter(str_detect(feature, "Preco")) %>% 
+  arrange(z) %>% 
+  full_join(UMAP_corrected, by = c("cell", "Plate")) %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = z), 
+             alpha = 0.8, color = "grey20", shape = 21, size = 2) +
+  #scale_fill_manual(values = brewer.pal(3, "Accent")) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, color = "grey20")
+  ) +
+  ggtitle("Precondylocarpine Acetate")
+
+Precon
+```
+
+## Epidermis 
+```{r}
+Sec <- Area_long %>% 
+  filter(feature == "Secologanin") %>% 
+  full_join(UMAP_corrected, by = c("cell", "Plate")) %>% 
+  arrange(z) %>%
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = z), 
+             alpha = 0.8, color = "grey20", shape = 21, size = 2) +
+  #scale_fill_manual(values = brewer.pal(3, "Accent")) +
+  scale_fill_gradientn(colors = brewer.pal(9, "PuBuGn"),
+                       breaks = c(0, 1)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 12),
+    panel.border = element_rect(fill = NA, color = "grey20")
+  ) +
+  ggtitle("Secologanin")
+
+Sec
+```
+
+# Write tables for LC
+```{r}
+Area_wide_batch <- Area_long_batch %>% 
+  select(feature, cell, area) %>%
+  spread(cell, area) %>% 
+  as.data.frame()
+
+row.names(Area_wide_batch) <- Area_wide_batch$feature
+
+head(Area_wide_batch)
+```
+
+
+```{r}
+# head(Area_z_wide_batch)
+# head(Area_log_wide)
+
+write_excel_csv(Area_z_wide_batch, "../Results/R_outputs_multiplate/z_scores_5e4.csv")
+write_excel_csv(Area_wide_batch, "../Results/R_outputs_multiplate/peak_area_5e4.csv")
+```
+
+
+# graph based clustering
+```{r}
+pc.dist <- dist((pc_batch$x)[, 1:50], method = "e")
+pc.sim <- (max(pc.dist) - as.matrix(pc.dist))/max(pc.dist) 
+
+cellgraph <- graph_from_adjacency_matrix(pc.sim, mode = "upper",
+                                         weighted = T, diag = F) 
+```
+
+```{r}
+leiden_clusters <- cluster_leiden(cellgraph, resolution_parameter = 1, objective_function = "modularity")
+
+leiden <- data.frame(
+  cell = names(membership(leiden_clusters)),
+  leiden = membership(leiden_clusters) %>% as.vector()
+) %>% 
+  mutate(cell = str_remove(cell, "_d1")) %>% 
+  mutate(Plate = case_when(
+   str_detect(cell, "p1d1") ~ "p1d1",
+   str_detect(cell, "p1d2") ~ "p1d2",
+   str_detect(cell, "p1d3") ~ "p1d3",
+   str_detect(cell, "p2d1") ~ "p2d1",
+   str_detect(cell, "p2d2") ~ "p2d2",
+   str_detect(cell, "p2d3") ~ "p2d3",
+   str_detect(cell, "p3d3") ~ "p3d3"
+  )) %>% 
+  mutate(cluster = as.factor(leiden))
+
+head(leiden)
+```
+```{r}
+leiden %>% 
+  group_by(cluster) %>% 
+  count()
+```
+
+```{r}
+UMAP_corrected %>% 
+  full_join(leiden, by = "cell") %>% 
+  ggplot(aes(x = V1, y = V2)) +
+  geom_point(aes(fill = cluster), 
+             alpha = 0.8, color = "white", shape = 21, size = 3) +
+  scale_fill_manual(values = brewer.pal(8, "Accent")) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  theme_void() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 12)
+  )
+```
+Didn't really work 
+
+
+# Metabolite network
+
+## Subset variable features
+```{r}
+Area_long_batch_highCV <- Area_long_batch %>% 
+  filter(feature %in% Common_features$feature) %>% 
+  group_by(feature) %>% 
+  summarize(CV = sd(log_Area)/mean(log_Area)) %>% 
+  mutate(cutoff = quantile(CV, 0.75)) %>%
+  filter(CV > cutoff) %>% 
+  ungroup()
+
+head(Area_long_batch_highCV)
+dim(Area_long_batch_highCV)
+```
+
+```{r}
+feature_by_cell_highCV <- Area_long_batch %>% 
+  filter(feature %in% Area_long_batch_highCV$feature) %>% 
+  select(cell, feature, z) %>% 
+  spread(feature, z) %>% 
+  as.data.frame()
+
+row.names(feature_by_cell_highCV) <- feature_by_cell_highCV$cell
+
+head(feature_by_cell_highCV)
+
+cor_met_mat <- cor(feature_by_cell_highCV[,-1],
+                   method = "s")
+dim(cor_met_mat)
+```
+
+## Make edge table 
+```{r}
+cor_met_mat2 <- cor_met_mat
+cor_met_mat2[lower.tri(cor_met_mat2, diag = T)] <- NA
+
+number_of_cells <- ncol(Area_z_wide_batch) - 1
+```
+
+```{r}
+edge_table <- cor_met_mat2 %>% 
+  as.data.frame() %>% 
+  mutate(from = row.names(cor_met_mat2)) %>% 
+  gather("to", "r", 1:ncol(cor_met_mat2)) %>% 
+  filter(is.na(r) == F) %>% 
+  mutate(t = r * sqrt((number_of_cells-2)/(1-r^2))) %>% 
+  mutate(p.value = case_when(
+    t > 0 ~ pt(t, df = number_of_cells-2, lower.tail = F),
+    t <=0 ~ pt(t, df = number_of_cells-2, lower.tail = T)
+  )) %>% 
+  mutate(FDR = p.adjust(p.value, method = "fdr")) %>% 
+  mutate(Type = case_when(
+    r > 0.8 ~ "sig",
+    T ~ "not"
+  )) %>% 
+  filter(r > 0) %>% 
+  filter(Type == "sig")
+
+
+head(edge_table)
+```
+### Are known compounds there? 
+```{r}
+edge_table %>% 
+  filter(r > 0.8) %>% 
+  arrange(-abs(r)) %>% 
+  filter(str_detect(from, "[a-z]") |
+           str_detect(to, "[a-z]"))
+```
+## Make node table
+
+* Compound name, 
+* Most correlated PC 
+
+```{r}
+Node_table <- feature_by_PC_df %>% 
+  filter(index <= 25) %>% 
+  group_by(feature) %>% 
+  slice_max(n = 1, order_by = abs(r)) %>% 
+  arrange(index) %>% 
+  rename(max.index = index) %>% 
+  rename(represented.by = PC) %>% 
+  mutate(Cell = case_when(
+    represented.by == "PC5" ~ "idioblast",
+    T ~ "other"
+  )) %>% 
+  ungroup() %>% 
+  filter(feature %in% edge_table$from |
+           feature %in% edge_table$to) %>% 
+  select(feature, represented.by, max.index, Cell) %>% 
+  mutate(represented.by = reorder(represented.by, max.index)) %>% 
+  mutate(tag2 = case_when(
+    str_detect(feature, "[a-z]") ~ "known",
+    T ~ ""
+  )) %>% 
+  mutate(tag3 = case_when(
+    str_detect(feature, "[a-z]") ~ feature
+  ))
+
+head(Node_table)
+```
+## Graph network 
+```{r}
+metabolite_network <- graph_from_data_frame(edge_table, vertices = Node_table, directed = F)
+
+metabolite_network_layout <- layout_with_kk(metabolite_network)
+```
+
+```{r}
+ggraph(metabolite_network, layout = "kk", circular = F) +
+  geom_edge_diagonal(color = "grey70", width = 0.5, alpha = 0.5) +
+  geom_node_point(alpha = 0.8, color = "white", shape = 21,
+                  aes(size = tag2, fill = Cell)) + 
+  geom_node_text(aes(label = tag3), size = 3, repel = T, max.overlaps = 10) +
+  scale_edge_color_manual(values = c("steelblue3", "tomato1")) +
+  scale_fill_manual(values = c("slateblue3", "grey80"),
+                    limits = c("idioblast", "other")) +
+  scale_size_manual(values = c(1.2, 3),
+                    limits = c("", "known")) +
+  labs(fill = NULL) +
+  guides(size = "none",
+         fill = guide_legend(override.aes = list(size = 4), 
+                             title.position = "top", nrow = 1)) +
+  theme_void()+
+  theme(
+    text = element_text(size = 14), 
+    legend.position = "bottom",
+    legend.justification = 1,
+    title = element_text(size = 12)
+  )
+```
+ 
+

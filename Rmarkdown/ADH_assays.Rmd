@@ -1,0 +1,106 @@
+---
+title: "ADH_assays"
+author: "Chenxin Li"
+date: "6/10/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(emmeans)
+library(multcomp)
+library(multcompView)
+
+library(RColorBrewer)
+library(viridis)
+library(svglite)
+
+library(patchwork)
+library(cowplot)
+```
+
+# Data
+```{r}
+ADH_assays <- read_excel("../Data/Activity_assay_0220518_long.xlsx")
+head(ADH_assays)
+```
+
+# Summary stats
+```{r}
+ADH_assays_s <- ADH_assays %>% 
+  group_by(Enzyme) %>% 
+  summarise(Mean = mean(Specific_activity),
+            Sd = sd(Specific_activity)) %>% 
+  ungroup()
+
+ADH_assays_s
+```
+
+
+# Linear model
+```{r}
+model_ADH <- lm(Specific_activity ~ Enzyme, data = ADH_assays)
+
+anova(model_ADH)
+```
+
+```{r}
+est_ADH <- emmeans(model_ADH, pairwise ~ Enzyme)
+
+est_ADH$contrasts
+```
+
+```{r}
+ADH_results <- cld(est_ADH$emmeans, Letters = "abcde") %>% 
+  as.data.frame() %>% 
+  mutate(grouping = str_remove_all(.group, " ")) %>% 
+  full_join(ADH_assays_s, by = "Enzyme") %>% 
+  mutate(Enzyme = reorder(Enzyme, Mean))
+
+ADH_results
+```
+
+# Graph 
+```{r}
+ADH_assays %>% 
+  mutate(Enzyme = fct_reorder(.f = Enzyme, .x = Specific_activity, .fun = mean)) %>% 
+  ggplot(aes(x = Enzyme, y = Specific_activity)) +
+  geom_bar(aes(color = Enzyme), stat = "summary", fun = mean, 
+           fill = NA, width = 0.5, size = 1.1, alpha = 0.8) +
+  ggbeeswarm::geom_quasirandom(aes(fill = Enzyme), 
+                               shape = 21, size = 3, alpha = 0.8,
+                               width = 0.1) +
+  geom_text(data = ADH_results, 
+            aes(label = grouping, y = Mean),
+            vjust = -1, size = 4) +
+  scale_color_manual(values = brewer.pal(8, "Set2")) +
+  scale_fill_manual(values = brewer.pal(8, "Set2")) +
+  scale_x_discrete(label = NULL) +
+  guides(color = "none",
+         fill = guide_legend(nrow = 3, title.position = "top")) +
+  labs(x = NULL,
+       y = "Specific Activity\n(umol/min/mg protein)") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    axis.text = element_text(color = "black"),
+    legend.position = "bottom"
+  )
+
+ggsave("../Results/ADH_assays.svg", height = 4, width = 3, bg = "white")
+ggsave("../Results/ADH_assays.png", height = 4, width = 3, bg = "white")
+```
+

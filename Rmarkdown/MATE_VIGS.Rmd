@@ -1,0 +1,203 @@
+---
+title: "MATE_VIGS"
+author: "Chenxin Li"
+date: "4/25/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(readxl)
+
+library(RColorBrewer)
+library(viridis)
+
+library(svglite)
+
+library(patchwork)
+library(cowplot)
+
+library(emmeans)
+```
+
+# Metabolites 
+## Load data 
+```{r}
+metabolites <- read_excel("../Data/MATE_metabolites.xlsx")
+
+metabolites <- metabolites %>% 
+  mutate(trt = case_when(
+    str_detect(Sample_Name, "EV") ~ "EV",
+    T ~ "VIGS"
+  )) %>% 
+  mutate(tag = case_when(
+    str_detect(Compound, "m/z_391") ~ "Secologanol",
+    T ~ Compound
+  ))
+
+
+head(metabolites)
+```
+## Stat 
+
+### Summary 
+```{r}
+metabolites %>% 
+  group_by(tag, trt) %>% 
+  summarise(
+    mean.mg = mean(mg),
+    sd.mg = sd(mg),
+    NN = n()
+  ) %>% 
+  ungroup() %>% 
+  mutate(se.mg = sd.mg/sqrt(NN))
+```
+
+
+### Linear model 
+```{r}
+smallest_non_zero <- metabolites %>% 
+  filter(mg > 0) %>% 
+  summarise(min = min(mg)) %>% 
+  as.numeric()
+
+```
+
+```{r}
+model_metabolite2 <- lm(log(mg2) ~ tag * trt, data = metabolites %>% 
+                          #mutate(mg2 = mg + smallest_non_zero/2)
+                          mutate(mg2 = case_when(
+                            mg == 0 ~ smallest_non_zero/2,
+                            T ~ mg
+                          )))
+
+plot(model_metabolite2)
+anova(model_metabolite2)
+```
+
+```{r}
+est_metabolite_log <- emmeans(model_metabolite2, pairwise ~ trt | tag)
+Metabolite_results <- multcomp::cld(est_metabolite_log$emmeans, 
+                                    Letters = letters) %>% 
+  as.data.frame()  
+```
+
+```{r}
+Metabolite_contrasts <- est_metabolite_log$contrasts %>% 
+  as.data.frame() 
+
+head(Metabolite_contrasts)
+```
+ 
+ 
+
+
+## Visualize 
+```{r}
+metabolites %>% 
+  mutate(tag = factor(tag, levels = c(
+    "Secologanol",  "Secologanin", "Strictosidine", 
+    "Serpentine", "Catharanthine", "Vindoline"
+  ))) %>% 
+  ggplot(aes(x = trt, y = mg)) +
+  facet_wrap(~ tag, scales = "free") +
+  stat_summary(geom = "bar", fill = NA,
+           width = 0.5, alpha = 0.8, aes(color = trt), 
+           fun.data = "mean_se") +
+  ggbeeswarm::geom_quasirandom(aes(fill = trt),
+                               alpha = 0.8, shape = 21, color = "white",
+                               size = 2) +
+  stat_summary(geom = "linerange", alpha = 0.8, 
+                 color = "black", size = 1, 
+           fun.data = "mean_se") +
+  geom_text(data = Metabolite_contrasts, x = 1.5, y = Inf, 
+            vjust = 2, hjust = 0.5, size = 3, fontface = "bold",
+            aes(label = paste0(
+              "P = ",
+              signif(p.value, 2))
+                )) +
+  scale_fill_manual(values = c("grey20", "tomato1"),
+                    limits = c("EV", "VIGS")) +
+  scale_color_manual(values = c("grey20", "tomato1"),
+                    limits = c("EV", "VIGS")) +
+  labs(y = "mg",
+       x = NULL) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black"),
+    title = element_text(size = 10)
+    ) + 
+  ggtitle("VIGS on SLTr")
+
+ggsave("../Results/metabolite_quant.svg", height = 3.5, width = 4.75, bg = "white")
+ggsave("../Results/metabolite_quant.png", height = 3.5, width = 4.75, bg = "white")
+```
+
+# qPCR
+## Data 
+```{r}
+MATE_qPCR <- read_excel("../Data/MATE_qPCR.xlsx")
+
+MATE_qPCR <- MATE_qPCR %>% 
+  mutate(trt = case_when(
+    str_detect(Samples, "EV") ~ "EV",
+    T ~ "VIGS"
+  ))
+head(MATE_qPCR)
+```
+
+## Stat
+```{r}
+wilcox.test(MATE_qPCR$`2res2ddCt` ~ MATE_qPCR$trt)
+```
+
+## Plot
+```{r}
+MATE_qPCR %>% 
+  ggplot(aes(x = trt, y = `2res2ddCt`)) +
+  stat_summary(geom = "bar", fill = NA,
+           width = 0.5, alpha = 0.8, aes(color = trt), 
+           fun.data = "mean_se") +
+  ggbeeswarm::geom_quasirandom(aes(fill = trt), size = 2, alpha = 0.8, 
+                               shape = 21, color = "white", width = 0.2) +
+  stat_summary(geom = "linerange", alpha = 0.8, 
+                 color = "black", size = 1, 
+           fun.data = "mean_se") +
+  annotate(
+    geom = "text", x = 1.5, y = 1.25, 
+    label = paste0("P = ", 
+                   signif(wilcox.test(MATE_qPCR$`2res2ddCt` ~ MATE_qPCR$trt)$p.value, 2)),
+    size = 3, fontface = "bold"
+  ) +
+  scale_fill_manual(values = c("grey20", "tomato1"),
+                     limits = c("EV", "VIGS")) +
+  scale_color_manual(values = c("grey20", "tomato1"),
+                     limits = c("EV", "VIGS")) +
+  labs(y = "Rel. Exp.",
+       x = NULL) +
+  theme_classic() +
+  theme(
+    legend.position = "none",
+    text = element_text(size = 14, color = "black", face = "bold"),
+    axis.text = element_text(color = "black")
+  )
+
+ggsave("../Results/MATE_qPCR.svg", height = 2.5, width = 2.5, bg = "white")
+ggsave("../Results/MATE_qPCR.png", height = 2.5, width = 2.5, bg = "white")
+```
+ 
+ 
+
