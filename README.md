@@ -24,5 +24,5 @@ R scripts for bioRxiv submission
 * Figure 6: scRNA_seq_leaf.Rmd
 * Figure 6c: ADH_assays.Rmd
 * Figure 6d: SingleCell_Meta_Plates_5e4.Rmd
-* Figure 7: scRNA_seq_Root.Rmd 
+* Extended Data Figure 1: scRNA_seq_Root.Rmd 
 
