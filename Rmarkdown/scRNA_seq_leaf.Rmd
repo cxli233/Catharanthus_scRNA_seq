@@ -190,14 +190,6 @@ head(leaf_10X_markers)
 leaf_10X_markers_top2 <- leaf_10X_markers %>% 
   group_by(cluster) %>% 
   slice_max(n = 1, order_by = avg_log2FC)
-
-
-DotPlot(leaf_10X, features = leaf_10X_markers_top2$gene, 
-        ) +
-  scale_color_gradientn(colors = viridis(10, option = "A")[1:9]) +
-  labs(y = "Cluster",
-       x = "Genes") + 
-  coord_flip()
 ```
 Cluster 4 and 10 are the same thing, cluster 7 and 9 are the same thing 
 
@@ -325,15 +317,15 @@ UMAP2 <- DimPlot(leaf_10X, reduction = "umap",
   )
 
 wrap_plots(UMAP2, leaf_assignment_graph, 
-           nrow = 2, heights = c(1, 0.9))
+           nrow = 2, heights = c(1, 0.5))
 
 ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_2.svg", height = 4.8, width = 3, bg = "white")
 ggsave("../Results/R_output_Leaf_scRNAseq/UMAP_2.png", height = 4.8, width = 3, bg = "white")
 ```
 
 ```{r}
-write_excel_csv(UMAP1$data, file = "../../CRO_manuscript_figures/Source_Files/Fig4a_1.csv")
-write_excel_csv(leaf_assignment_graph$data, file = "../../CRO_manuscript_figures/Source_Files/Fig4a_2.csv")
+write_excel_csv(UMAP1$data, file = "../../CRO_manuscript_figures/Revision1/Figure_Source_Data/Fig4a_1.csv")
+write_excel_csv(leaf_assignment_graph$data, file = "../../CRO_manuscript_figures/Revision1/Figure_Source_Data/Fig4a_2.csv")
 ```
 
 
@@ -391,6 +383,7 @@ leaf_MIA_genes <- MIA_genes_info %>%
 head(leaf_MIA_genes)
 ```
 ```{r}
+DefaultAssay(leaf_10X) <- "RNA"
 MIA_at_cluster <- DotPlot(leaf_10X, features = rev(leaf_MIA_genes$gene))
 
 MIA_at_cluster$data %>% 
@@ -449,10 +442,12 @@ leaf_10X$cell_type <- metadata$cell_type
 #                                 "Mesophyll", "Vasculature", "Guard Cells", "Phloem CC"
 #                              ))
 
+DefaultAssay(leaf_10X) <- "integrated"
 DotPlot_MIA_cell_type <- DotPlot(leaf_10X, 
                                  features = rev(leaf_MIA_genes$gene),
                                  group.by = "cell_type")
 ```
+
 ```{r}
 MIA_at_cell_type <- DotPlot_MIA_cell_type$data %>%
   #filter(id != "Guard Cells") %>% 
@@ -482,6 +477,10 @@ MIA_at_cell_type <- DotPlot_MIA_cell_type$data %>%
   )) %>% 
   mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
   inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(tag = case_when(
+    tag == "MATE" ~ "SLTr",
+    T ~ tag
+  )) %>% 
   mutate(gene = reorder(gene, -order)) %>%
   mutate(tag = reorder(tag, -order)) %>%
   ggplot(aes(y = tag, x = id2)) +
@@ -510,8 +509,8 @@ MIA_at_cell_type <- DotPlot_MIA_cell_type$data %>%
 
 MIA_at_cell_type
 
-ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.svg", height = 7, width = 2.8, bg = "white")
-ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.png", height = 7, width = 2.8, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.svg", height = 7, width = 3, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf.png", height = 7, width = 3, bg = "white")
 ```
 
 ```{r}
@@ -572,6 +571,70 @@ DotPlot_MIA_cell_type$data %>%
 ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v2.svg", height = 7.2, width = 2, bg = "white")
 ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v2.png", height = 7.2, width = 2, bg = "white")
 ```
+
+```{r}
+DotPlot_MIA_cell_type$data %>%
+  filter(id != "Guard cells") %>% 
+  filter(id != "Phloem CC") %>% 
+  # mutate(id = factor(id, levels = c(
+  #   "IPAP", "Epidermis", "Idioblast",
+  #   "Mesophyll", "Vasculature", "Guard cells", "Phloem CC"
+  # ))) %>%
+  mutate(id2 = case_when(
+    str_detect(id, "Meso") ~ "M",
+    str_detect(id, "Epi") ~ "E",
+    str_detect(id, "IP") ~ "IP",
+    str_detect(id, "Idio") ~ "I",
+    str_detect(id, "Vas") ~ "V",
+    str_detect(id, "Guard") ~ "GC",
+    str_detect(id, "CC") ~ "CC"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "IP", "E", "I",
+    "M", "V", "GC", "CC"
+  ))) %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(leaf_MIA_genes, by = "gene") %>%
+  mutate(gene = reorder(gene, -order)) %>%
+  mutate(tag = case_when(
+    tag == "MATE" ~ "SLTr",
+    T ~ tag
+  )) %>% 
+  mutate(tag = reorder(tag, -order)) %>%
+  ggplot(aes(y = tag, x = id2)) +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  # scale_y_discrete(label = NULL) +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.8) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"),
+                              ncol = 1)) +
+  #guides(fill = guide_colorbar(title.position = "top")) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg.\nExp.",
+       size = "% Exp.") +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "right",
+        legend.box = "vertical",
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        legend.title = element_text(size = 12),
+        title = element_text(size = 10, face = "bold")) 
+
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v3.svg", height = 7, width = 3.2, bg = "white")
+ggsave("../Results/R_output_Leaf_scRNAseq/MIA_at_cell_type_leaf_v3.png", height = 7, width = 3.2, bg = "white")
+```
+
 
 
 ### GPPS SSU

@@ -135,8 +135,37 @@ edge_table %>%
 When cut off at FDR < 0.01, r > 0.78
 When cut off at r = 0.9, FDR < 2.435622e-06 
 
+```{r}
+write_excel_csv(edge_table, "../Results/R_output_Leaf_scRNAseq/edge_table_leaf_sc.csv")
+```
 
-
+# r Cutoffs
+## Idioblast
+```{r}
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-06G013360|CRO-02G001090|CRO-06G024620") &
+                  str_detect(to, "CRO-06G013360|CRO-02G001090|CRO-06G024620")) 
+```
+## IPAP
+```{r}
+## IPAP - ISY and IO
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-07G007680|CRO-03G004950") &
+                  str_detect(to, "CRO-07G007680|CRO-03G004950")) 
+```
+## Epidermis
+```{r}
+# Epidermis LAMT, SLS, SLTr
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-03G019430|CRO-04G013510|CRO-03G032350") &
+                  str_detect(to, "CRO-03G019430|CRO-04G013510|CRO-03G032350")) 
+```
+```{r}
+# Epidermis Redox1 and Redox2 
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-05G017150|CRO-05G008760") &
+                  str_detect(to, "CRO-05G017150|CRO-05G008760")) 
+```
 
 # Build node table 
 ## Nodes attributes
@@ -183,9 +212,14 @@ leaf_MIA_genes2 %>%
 ## Subset for edges linking genes in leaf_MIA_genes 
 ```{r}
 edge_table_select <- edge_table %>% 
-  filter(Type == "co-expressed") %>% 
+  filter(r > 0.75) %>% 
   filter(from %in% leaf_MIA_genes2$gene |
            to %in% leaf_MIA_genes2$gene)
+
+head(edge_table_select)
+```
+```{r}
+expr.leaf_by_cell_type <- readRDS("../Results/R_output_Leaf_scRNAseq/expr.leaf_by_cell_type.Rds")
 ```
 
 ```{r}
@@ -224,8 +258,8 @@ ggraph(MIA_network, layout = "kk", circular = F) +
   geom_edge_diagonal(color = "grey70", width = 0.5, alpha = 0.5) +
   geom_node_point(alpha = 0.8, color = "white", shape = 21,
                   aes(fill = segment, size = tag2)) + 
-  geom_node_text(aes(label = tag3), size = 3, repel = T, max.overlaps = 10) +
-  scale_edge_color_manual(values = c("steelblue3", "tomato1")) +
+  geom_node_text(aes(label = tag3), size = 3, repel = T, max.overlaps = 30) +
+  #scale_edge_color_manual(values = c("steelblue3", "tomato1")) +
   scale_fill_manual(values = c(viridis(5, option = "D"),  "white"),
                     limits = c("TF", "MEP", "Iridoid", "Alkaloid", "Late Alkaloid", "")) +
   scale_size_manual(values = c(1, 2.5),
@@ -245,6 +279,12 @@ ggraph(MIA_network, layout = "kk", circular = F) +
 ggsave("../Results/R_output_Leaf_scRNAseq/Leaf_CoExp_Network.svg", height = 3.2, width = 3, bg = "white")
 ggsave("../Results/R_output_Leaf_scRNAseq/Leaf_CoExp_Network.png", height = 3.2, width = 3, bg = "white")
 ```
+```{r}
+write_excel_csv(edge_table_select, "../Results/Source_Files/Fig4c_1.csv")
+write_excel_csv(Node_table_select, "../Results/Source_Files/Fig4c_2.csv")
+```
+
+
 # Find DAP-seq candidates 
 ## Extract modules
 ```{r}
@@ -257,13 +297,15 @@ MIA_network_modules <- data.frame(
   inner_join(Node_table_select, by = "gene") %>% 
   select(gene, module, cell_type, cro_v2_id, tag, `function`, segment, tag2)
   
-head(MIA_network_modules)
+MIA_network_modules %>% 
+  filter(is.na(tag) == F)
 ```
-* module 1 = IPAP
-* module 2 = Epidermis
-* module 3 = MYC2 
-* module 4 = IPAP
-* module 5 = ORCA3 
+* module 1 = Idioblast
+* module 2,5 = Epidermis
+* module 6 = IPAP 
+* module 4 = Vasculature (MYC)
+* module 3 = ORCA
+
 
 ```{r}
 MIA_network_modules %>% 
@@ -292,13 +334,19 @@ MIA_network_modules_func <- MIA_network_modules %>%
 MIA_network_modules_func
 ```
 
+ 
+
+
+
 ## Idioblast
 ```{r}
 Idioblast_candidates <- MIA_network_modules_func %>% 
   filter(module == 1) %>% 
-  select(gene, X2, module, cro_v2_id, tag, `function`)
+  select(gene, X2, module, cro_v2_id, tag, `function`) %>% 
+  distinct(gene, .keep_all = T)
 
-Idioblast_candidates
+Idioblast_candidates %>% 
+  filter(is.na(tag)==F)
 ```
 
 ```{r}
@@ -310,8 +358,9 @@ write_excel_csv(Idioblast_candidates,
 ## IPAP
 ```{r}
 IPAP_candidates <- MIA_network_modules_func %>% 
-  filter(module == 4) %>% 
-  select(gene, X2, module, cro_v2_id, tag, `function`)
+  filter(module == 6) %>% 
+  select(gene, X2, module, cro_v2_id, tag, `function`) %>% 
+  distinct(gene, .keep_all = T)
 
 IPAP_candidates
 ```
@@ -324,15 +373,145 @@ write_excel_csv(IPAP_candidates,
 ## Epidermis 
 ```{r}
 epidermis_candidates <- MIA_network_modules_func %>% 
-  filter(module == 2) %>% 
-  select(gene, X2, module, cro_v2_id, tag, `function`)
+  filter(module == 2 |
+           module == 5) %>% 
+  select(gene, X2, module, cro_v2_id, tag, `function`) %>% 
+  distinct(gene, .keep_all = T)
 
-epidermis_candidates
+epidermis_candidates %>% 
+  filter(str_detect(gene, "07G012950") |
+           is.na(tag)==F)
 ```
 ```{r}
 write_excel_csv(epidermis_candidates, 
                 "../Results/R_output_Leaf_scRNAseq/epidermis_candidates.csv", col_names = T)
 ```
+
+
+# Integrate with gene clusters 
+```{r}
+coexp <- rbind(
+  Idioblast_candidates %>% 
+    mutate(module = "Idioblast Module"),
+  epidermis_candidates %>% 
+    mutate(module = "Epidermis Module"),
+  IPAP_candidates %>% 
+    mutate(module = "IPAP Module")
+) %>% 
+  mutate(gene = str_replace(gene, "-", "_"))
+
+coexp
+
+write_excel_csv(coexp, "../Results/R_output_Leaf_scRNAseq/gene_coexp_modules.csv")
+```
+gene_coexp_modules.csv will become a supplementary table. 
+
+
+```{r}
+gene_array_by_position <- read_excel("../Results/R_outputs/MIA_pathway_Orthogroups_by_position.xlsx")
+
+head(gene_array_by_position)
+```
+## joining 
+```{r}
+tail(functional_annotation)
+```
+
+```{r}
+gene_array_by_position_coexp <- gene_array_by_position %>% 
+  left_join(coexp %>% 
+              select(-cro_v2_id, -tag, -X2, -`function`), by = "gene") %>% 
+  select(-Notes) %>% 
+  left_join(functional_annotation %>% 
+              mutate(gene = str_replace(gene, "-", "_")), 
+            by = "gene") %>% 
+  distinct(gene, .keep_all = T)
+
+head(gene_array_by_position_coexp)
+```
+```{r}
+write_excel_csv(gene_array_by_position_coexp, 
+                "../Results/R_outputs/MIA_pathway_Orthogroups_by_position_coexp.csv")
+```
+
+
+## Intergrate with root expression
+```{r}
+# load nice excel sheet 
+gene_array_by_position_coexp_excel <- read_excel("../../CRO_manuscript_figures/Revision1/Archived/BIG_table.xlsx")
+
+head(gene_array_by_position_coexp_excel)
+```
+
+```{r}
+expr.root_by_cell_type_max <- read_csv("../Results/R_output_Root_scRNAseq/Root_max_exp.csv",
+                                       col_types = cols())
+
+head(expr.root_by_cell_type_max)
+```
+```{r}
+gene_array_by_position_coexp_excel_root <- gene_array_by_position_coexp_excel %>% 
+  left_join(expr.root_by_cell_type_max %>% 
+              mutate(gene = str_replace(gene, "-", "_")) %>% 
+              rename(
+                Root_max_exp = cell_type
+              ) %>% 
+              select(-mean.rel.exp), by = "gene")
+
+head(gene_array_by_position_coexp_excel_root)
+```
+## Integrate with TAD info 
+
+```{r}
+genes.bed <- gene_array_by_position_coexp_excel_root %>% 
+  select(Chr, start, end, gene)
+
+write_delim(genes.bed, "../Results/R_outputs/MIA_paralog_genes.bed", delim = "\t", col_names = F)
+```
+
+
+```{r}
+genes_to_TAD <- read_delim("../Results/R_outputs/genes_to_TAD.bed",
+                           delim = "\t", col_names = F, col_types = cols())
+
+genes_to_TAD
+```
+
+```{r}
+gene_array_by_position_coexp_excel_root_TAD <- gene_array_by_position_coexp_excel_root %>% 
+  left_join(genes_to_TAD %>% 
+              select(X4, X5, X6, X7) %>% 
+              rename(
+                gene = X4,
+                TAD_Chr = X5,
+                TAD_start = X6,
+                TAD_end = X7
+              ), by = "gene")
+
+head(gene_array_by_position_coexp_excel_root_TAD)
+```
+
+```{r}
+gene_array_by_position_coexp_excel_root_TAD_nice <- gene_array_by_position_coexp_excel_root_TAD %>% 
+  select(Orthogroup, gene, Chr, start, end, tag, functional_annotation, 
+         cro_v2_id, module, Root_max_exp, Loop_forming, TAD_Chr, TAD_start, TAD_end) %>% 
+  rename(
+    leaf_coexpression_module = module
+  )
+
+head(gene_array_by_position_coexp_excel_root_TAD_nice)
+```
+```{r}
+write_excel_csv(gene_array_by_position_coexp_excel_root_TAD_nice,
+                "../../CRO_manuscript_figures/Revision1/BIG_table_root_TAD.csv")
+```
+
+BIG_table_root_TAD.csv will be a supplementary table 
+
+
+
+
+
 
 ## Pull orthogroups
 ```{r}

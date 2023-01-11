@@ -1,0 +1,811 @@
+---
+title: "GeneCoEx"
+author: "Chenxin Li"
+date: "11/9/2022"
+output:  
+  html_notebook:
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+  html_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Packages 
+```{r}
+library(tidyverse)
+library(Seurat) 
+library(Signac)
+library(readxl)
+
+library(igraph)
+library(ggraph)
+
+library(RColorBrewer)
+library(viridis)
+library(rcartocolor)
+
+library(patchwork)
+
+set.seed(666)
+```
+
+
+# Data
+## Seurat object and cell type annotation 
+```{r}
+Root_Integrated <- read_rds("../Results/R_output_Root_scRNAseq/Root_Integrated.Rds")
+
+root_cell_type_assignment <- data.frame(
+  cluster = c(0:9)
+) %>% 
+  mutate(cell_type = case_when(
+    cluster == 1 ~ "Meristem",
+    cluster == 2 ~ "Root cap",
+    cluster == 4 ~ "Ground",
+    cluster == 5| 
+      cluster == 9 ~ "Stele",
+    cluster == 6 ~ "Stele", 
+    cluster == 8 ~ "Epidermis",
+    T ~ "Unassigned"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, levels = c(
+    "Meristem", "Root cap", "Ground", "Epidermis", "Stele", "Unassigned"
+  ))) %>% 
+  mutate(cluster = factor(cluster, levels = c(
+    "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+  )))
+
+levels(Root_Integrated) <- c(
+     "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+  )
+
+root_cell_type_strip <- root_cell_type_assignment %>% 
+  ggplot(aes(x = cluster, y = "" )) +
+  geom_tile(aes(fill = cell_type)) +
+  scale_fill_manual(values = c(brewer.pal(5, "Set2"), "grey80")) +
+  labs(fill = "Cell type") +
+  theme_void() +
+  theme(
+    legend.position = "bottom" ,
+    text = element_text(size = 14)
+  )
+
+```
+
+## MIA enzymes 
+```{r}
+MIA_genes_info <- readRDS(file = "../Results/R_outputs/MIA_genes_info.Rdss")
+
+root_MIA_genes <- MIA_genes_info %>% 
+  mutate(tag = case_when(
+    str_detect(as.character(gene), "05G028810") ~ "7DLGT",
+    str_detect(as.character(gene), "04G032090") ~ "GPPS(LSU)",
+    T ~ tag
+    )) %>% 
+  filter(is.na(tag) == F) %>% 
+  mutate(order = case_when(
+    str_detect(as.character(gene), "04G032090") ~  9,
+    str_detect(as.character(gene), "05G028810") ~ 15, 
+    T ~ order
+  )) %>% 
+  arrange(order) %>% 
+  mutate(segment = case_when(
+    str_detect(as.character(gene), "04G032090") ~ "MEP",
+    str_detect(as.character(gene), "05G028810") ~ "Iridoid", 
+    T ~ segment
+  )) %>% 
+  #filter(is.na(order) == F) %>% 
+  filter(str_detect(as.character(gene), "05G025350") == F) %>% 
+  filter(str_detect(as.character(gene), "05G028780") == F) %>% 
+  filter(str_detect(tag, "ADH|THAS|HYS|ISP|GS2|D4H|DAT|SS") == F) %>% 
+   filter(str_detect(tag, "T3O|T3R|NMT|16O|T16H") == F) %>% 
+  mutate(tag = case_when(
+    str_detect(tag, "SGD$") ~ "SGD1",
+    str_detect(tag, "MATE") ~ "SLTr",
+    #str_detect(tag, "SGD2") ~ "SDG2",
+    str_detect(tag, "GS$") ~ "GS1",
+    T ~ tag
+  )) %>% 
+  mutate(gene = str_replace_all(gene, "_", "-"))  %>% 
+  filter(segment != "TF") %>% 
+  mutate(order = case_when(
+    str_detect(tag, "TEX1") ~  38,
+    str_detect(tag, "TEX2") ~  39,
+    str_detect(tag, "T19H") ~  40,
+    str_detect(tag, "TAT") ~  41,
+    str_detect(tag, "MAT$") ~  42,
+    T ~ order
+  )) 
+
+head(root_MIA_genes)
+```
+
+## Functional annotation 
+```{r}
+functional_annoation <- read_delim("../Data/cro_v3_anno/cro_v3.functional_annotation.txt",
+                                   delim = "\t", col_names = F)
+
+functional_annoation <- functional_annoation %>% 
+  mutate(gene= str_sub(X1, end = 13)) %>% 
+  distinct(gene, .keep_all = T) %>% 
+  mutate(gene = str_replace(gene, "_", "-"))
+
+tail(functional_annoation)
+```
+
+## Gene models
+```{r}
+repr_gene_models <- read_delim("../Data/cro_v3_anno/cro_v3.gene_models.repr.gff3",
+                               delim = "\t", col_names = F)
+
+repr_loci <- repr_gene_models %>% 
+  dplyr::filter(X3 == "mRNA") %>% 
+  dplyr::select(X1, X4, X5, X7, X9) %>% 
+  separate(X9, c("ID", "Name"), sep = ";") %>% 
+  dplyr::select(-Name) %>% 
+  separate(ID, c("temp", "gene_ID"), sep = "=") %>% 
+  dplyr::select(-temp) %>% 
+  mutate(gene = str_sub(gene_ID, start = 1, end = 13)) %>% 
+  mutate(gene = str_replace(gene_ID, "_", "-")) %>% 
+  mutate(gene = str_replace(gene, "_", "-")) %>% 
+  dplyr::rename(
+    Chr = X1,
+    start = X4,
+    end = X5,
+    strand = X7
+  )
+
+
+head(repr_loci)
+```
+
+
+## Known TFs 
+```{r}
+MIA_TFs <- MIA_genes_info %>% 
+  dplyr::filter(segment == "TF") %>% 
+  mutate(gene = str_replace(gene, "_", "-")) 
+
+MIA_TFs
+```
+
+# Metadata
+```{r}
+metadata_root <- Root_Integrated@meta.data %>% 
+  mutate(barcode = row.names(Root_Integrated@meta.data)) %>% 
+    mutate(cell_type = case_when(
+    seurat_clusters == 1 ~ "Meristem",
+    seurat_clusters == 2 ~ "Root cap",
+    seurat_clusters == 4 ~ "Ground",
+    seurat_clusters == 5| 
+      seurat_clusters == 9 ~ "Stele",
+    seurat_clusters == 6 ~ "Stele", 
+    seurat_clusters == 8 ~ "Epidermis",
+    T ~ "Unassigned"
+  )) %>% 
+  mutate(cell_type = factor(cell_type, levels = c(
+    "Meristem", "Root cap", "Ground", "Epidermis", "Stele", "Unassigned"
+  ))) 
+
+head(metadata_root)
+
+Root_Integrated$cell_type <- metadata_root$cell_type
+```
+
+
+
+# Pull gene expression matrix 
+```{r}
+Root_gex <- GetAssayData(Root_Integrated, slot = "scale.data", assay = "integrated")
+Root_metadata <- metadata_root
+
+Root_gex_by_cluster <- Root_gex %>% 
+  as.data.frame() %>% 
+  mutate(gene = row.names(.)) %>% 
+  pivot_longer(cols = !gene, names_to = "barcode", values_to = "exp") %>% 
+  inner_join(metadata_root, by = "barcode") %>% 
+  group_by(gene, seurat_clusters) %>% 
+  summarise(mean.rel.exp = mean(exp)) %>% 
+  ungroup()
+
+head(Root_gex_by_cluster)
+```
+
+# Pairwise correlation 
+```{r}
+z_score_wide <- Root_gex_by_cluster %>% 
+  pivot_wider(names_from = seurat_clusters, values_from = mean.rel.exp) %>% 
+  as.data.frame()
+
+row.names(z_score_wide) <- z_score_wide$gene
+head(z_score_wide)[1:6]
+```
+
+```{r}
+z_score_wide %>% 
+  inner_join(root_MIA_genes, by = c("gene")) %>% 
+  dplyr::select(gene, tag, order) %>% 
+  arrange(order)
+```
+26 of 40 known steps are in the top 3000 variable genes 
+
+```{r}
+cor_matrix <- cor(t(z_score_wide[, -1]))
+dim(cor_matrix)
+```
+
+## Edge selection 
+```{r}
+number_of_clusters <- ncol(z_score_wide) - 1
+cor_matrix_upper_tri <- cor_matrix
+cor_matrix_upper_tri[lower.tri(cor_matrix_upper_tri)] <- NA
+```
+
+
+```{r}
+edge_table <- cor_matrix_upper_tri %>% 
+  as.data.frame() %>% 
+  mutate(from = row.names(cor_matrix)) %>% 
+  pivot_longer(cols = !from, names_to = "to", values_to = "r") %>% 
+  dplyr::filter(is.na(r) == F) %>% 
+  dplyr::filter(from != to) %>% 
+  mutate(t = r*sqrt((number_of_clusters-2)/(1-r^2))) %>% 
+  mutate(p.value = case_when(
+    t > 0 ~ pt(t, df = number_of_clusters-2, lower.tail = F),
+    t <=0 ~ pt(t, df = number_of_clusters-2, lower.tail = T)
+  )) %>% 
+  mutate(FDR = p.adjust(p.value, method = "fdr")) 
+
+head(edge_table)
+```
+
+## Check bait gene correlation 
+```{r}
+## IPAP - ISY and IO
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-07G007680|CRO-03G004950") &
+                  str_detect(to, "CRO-07G007680|CRO-03G004950")) 
+
+```
+```{r}
+#  LAMT, SLS, SLTr
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-03G019430|CRO-04G013510|CRO-03G032350") &
+                  str_detect(to, "CRO-03G019430|CRO-04G013510|CRO-03G032350")) 
+```
+```{r}
+#  Redox2 and SAT 
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-05G008760|05G023030") &
+                  str_detect(to, "CRO-05G008760|05G023030")) 
+```
+```{r}
+## T19H and MAT
+edge_table %>% 
+  dplyr::filter(str_detect(from, "CRO-05G032890|CRO-02G001020|CRO-02G001000") &
+                  str_detect(to, "CRO-05G032890|CRO-02G001020|CRO-02G001000")) 
+```
+
+```{r}
+edge_table %>% 
+  dplyr::filter(r > 0) %>% 
+  dplyr::filter(FDR < 0.05) %>% 
+  slice_min(order_by = abs(r), n = 10)
+
+edge_table %>% 
+  dplyr::filter(r > 0) %>% 
+  dplyr::filter(FDR < 0.01) %>% 
+  slice_min(order_by = abs(r), n = 10)
+```
+
+```{r}
+edge_table_select <- edge_table %>% 
+  dplyr::filter(r >= 0.85) %>% 
+  mutate(from = str_sub(from, end = 13)) %>% 
+  mutate(to = str_sub(to, end = 13)) 
+
+dim(edge_table_select)
+```
+
+# Module detection
+## Node table 
+```{r}
+colnames(root_MIA_genes)
+colnames(MIA_TFs)
+```
+
+```{r}
+known_genes <- root_MIA_genes %>% 
+  dplyr::select(gene, tag, order, segment) %>% 
+  rbind(
+    MIA_TFs %>% 
+      dplyr::select(gene, tag, order, segment)
+  )
+
+head(known_genes)
+```
+
+
+```{r}
+node_table <- data.frame(
+  gene = unique(c(edge_table_select$from, edge_table_select$to))
+) %>% 
+  left_join(functional_annoation, by = "gene") %>% 
+  dplyr::rename(functional_annoation = X2) %>% 
+  left_join(known_genes, by = "gene")
+
+node_table %>% 
+  dplyr::filter(is.na(tag) == F) %>% 
+  arrange(order)
+
+dim(node_table)
+```
+
+## Network object
+```{r}
+my_network <- graph_from_data_frame(
+  edge_table_select,
+  vertices = node_table,
+  directed = F
+)
+```
+
+### Optimize resolution
+```{r}
+optimize_resolution <- function(network, resolution){
+  modules = network %>% 
+    cluster_leiden(resolution_parameter = resolution,
+                   objective_function = "modularity")
+  
+  parsed_modules = data.frame(
+    gene_ID = names(membership(modules)),
+    module = as.vector(membership(modules)) 
+    )
+  
+  num_module_5 = parsed_modules %>% 
+    group_by(module) %>% 
+    count() %>% 
+    arrange(-n) %>% 
+    dplyr::filter(n >= 5) %>% 
+    nrow() %>% 
+    as.numeric()
+  
+  num_genes_contained = parsed_modules %>% 
+    group_by(module) %>% 
+    count() %>% 
+    arrange(-n) %>% 
+    dplyr::filter(n >= 5) %>% 
+    ungroup() %>% 
+    summarise(sum = sum(n)) %>% 
+    as.numeric()
+  
+  cbind(num_module_5, num_genes_contained) %>% 
+    as.data.frame()
+
+}
+
+optimize_resolution(my_network, 1)
+```
+
+```{r}
+ optimization_results <- purrr::map_dfr(
+  .x = seq(from = 0.25, to = 10, by = 0.25),
+  .f = optimize_resolution, 
+  network = my_network
+) %>% 
+  cbind(
+   resolution = seq(from = 0.25, to = 10, by = 0.25)
+  )  
+
+head(optimization_results)
+```
+
+```{r}
+Optimize_num_module <- optimization_results %>% 
+  ggplot(aes(x = resolution, y = num_module_5)) +
+  geom_line(size = 1.1, alpha = 0.8, color = "dodgerblue2") +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_vline(xintercept = 3, size = 1, linetype = 4) +
+  labs(x = "resolution parameter",
+       y = "num. modules\nw/ >=5 genes") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14),
+    axis.text = element_text(color = "black")
+  )
+
+Optimize_num_gene <- optimization_results %>% 
+  ggplot(aes(x = resolution, y = num_genes_contained)) +
+  geom_line(size = 1.1, alpha = 0.8, color = "violetred2") +
+  geom_point(size = 3, alpha = 0.7) +
+  geom_vline(xintercept = 3, size = 1, linetype = 4) +
+  labs(x = "resolution parameter",
+       y = "num. genes in\nmodules w/ >=5 genes") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14),
+    axis.text = element_text(color = "black")
+  )
+
+wrap_plots(Optimize_num_module, Optimize_num_gene, nrow = 2)
+```
+
+# Graph based clustering 
+```{r}
+modules <- cluster_leiden(my_network, resolution_parameter = 3, 
+                          objective_function = "modularity")
+
+my_network_modules <- data.frame(
+  gene = names(membership(modules)),
+  module = as.vector(membership(modules)) 
+) %>% 
+  inner_join(node_table, by = "gene")
+
+module_5 <- my_network_modules %>% 
+  group_by(module) %>% 
+  count() %>% 
+  arrange(-n) %>% 
+  dplyr::filter(n >= 5)
+
+my_network_modules <- my_network_modules %>% 
+  dplyr::filter(module %in% module_5$module)
+
+head(my_network_modules)
+```
+## Module treatment correspondance
+```{r}
+z_score_modules <- Root_gex_by_cluster %>% 
+  inner_join(my_network_modules %>% 
+               dplyr::select(-X1), by = "gene") 
+
+head(z_score_modules)
+```
+```{r}
+modules_mean_z <- z_score_modules %>% 
+  group_by(module, seurat_clusters) %>% 
+  summarise(mean.z = mean(mean.rel.exp),
+            q3.z = quantile(mean.rel.exp, 0.75)) %>% 
+  ungroup()
+
+head(modules_mean_z)
+```
+
+```{r}
+module_peak_exp <- modules_mean_z %>% 
+  group_by(module) %>% 
+  slice_max(order_by = mean.z, n = 1) %>% 
+  dplyr::rename(peak_seurat_cluster = seurat_clusters) %>% 
+  arrange(peak_seurat_cluster)
+
+module_peak_exp
+```
+
+```{r}
+modules_mean_z %>% 
+  group_by(module) %>% 
+  slice_min(order_by = mean.z, n = 1) %>% 
+  dplyr::rename(min_seurat_cluster = seurat_clusters) %>% 
+  arrange(min_seurat_cluster)
+```
+
+## Line graphs 
+### Positive modules 
+```{r}
+module_line_plot <- z_score_modules %>% 
+  mutate(seurat_clusters = factor(seurat_clusters, levels = c(
+     "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+  ))) %>% 
+  dplyr::filter(module == "5" |
+                  module == "4" ) %>% 
+  ggplot(aes(x = seurat_clusters, y = mean.rel.exp)) +
+  facet_grid(module ~. , scales = "free_y") +
+  geom_line(aes(group = gene), alpha = 0.3, color = "grey75") +
+  geom_line(
+    data = z_score_modules %>%
+      dplyr::filter(gene == "CRO-07G007680" |
+                  gene == "CRO-02G001000") %>%
+      mutate(seurat_clusters = factor(seurat_clusters, levels = c(
+         "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+        ))),
+    size = 1.1, alpha = 0.8, aes(color= tag, group = module)
+  ) +
+  scale_color_manual(values = carto_pal(7, "BluGrn")[c(3, 5, 7)],
+                     limits = c("ISY", "MAT")) +
+  labs(x = "Seurat cluster",
+       y = "z score",
+       color = "example") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(1, "line"),
+    legend.position = "top"
+  )
+
+wrap_plots(module_line_plot, root_cell_type_strip,
+           nrow = 2, heights = c(1, 0.08))
+
+ggsave("../Results/R_output_Root_scRNAseq/Module_line.svg", height = 4.5, width = 7, bg = "white")
+ggsave("../Results/R_output_Root_scRNAseq/Module_line.png", height = 4.5, width = 7, bg = "white")
+```
+
+
+```{r}
+z_score_modules %>% 
+  mutate(seurat_clusters = factor(seurat_clusters, levels = c(
+     "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+  ))) %>% 
+  ggplot(aes(x = seurat_clusters, y = mean.rel.exp)) +
+  facet_grid(module ~. , scales = "free_y") +
+  geom_line(aes(group = gene), alpha = 0.3, color = "grey75") +
+  scale_color_manual(values = carto_pal(7, "BluGrn")[c(3, 5, 7)],
+                     limits = c("ISY", "MAT")) +
+  labs(x = "Seurat cluster",
+       y = "z score",
+       color = "example") +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(1, "line"),
+    legend.position = "top"
+  )
+```
+
+
+# Network graph 
+
+```{r}
+subnetwork_genes <- my_network_modules %>% 
+  dplyr::filter(module == "5" |
+           module == "4") %>% 
+  mutate(segment = case_when(
+    str_detect(segment, "Transporter") ~ "Alkaloid", 
+    T ~ segment
+    )) %>% 
+  mutate(tag2 = case_when(
+    is.na(tag) ~ "",
+    T ~ "known genes"
+    )) 
+
+subnetwork_genes %>% 
+  dplyr::filter(is.na(tag) ==F)
+
+subnetwork_edges <- edge_table_select %>% 
+  dplyr::filter(from %in% subnetwork_genes$gene & 
+                  to %in% subnetwork_genes$gene)
+
+dim(subnetwork_genes)
+dim(subnetwork_edges) 
+
+dim(subnetwork_genes)[1] == length(unique(c(subnetwork_edges$from, subnetwork_edges$to)))
+
+write_excel_csv(subnetwork_genes, "../Results/R_output_Root_scRNAseq/subnetwork_genes.csv")
+write_excel_csv(subnetwork_edges, "../Results/R_output_Root_scRNAseq/subnetwork_edges.csv")
+```
+
+```{r}
+my_subnetwork <- graph_from_data_frame(subnetwork_edges,
+                                     vertices = subnetwork_genes,
+                                     directed = F)
+```
+
+
+```{r}
+ my_subnetwork %>% 
+  ggraph(layout = "kk", circular = F) +
+  geom_edge_diagonal(color = "grey80", width = 0.5, alpha = 0.5) +
+  geom_node_point(alpha = 0.8, color = "white", shape = 21,
+                  aes(fill = segment, size = tag2)) + 
+  geom_node_text(aes(label = tag), size = 3, repel = T, max.overlaps = 30) +
+  scale_fill_manual(values = c(viridis(5), "white"),
+                   limits = c( "TF", "MEP", "Iridoid",
+                             "Alkaloid", "Late Alkaloid", "")) +
+  scale_size_manual(values = c(1, 2.5),
+                    limits = c("", "known genes")) +
+  labs(fill = "Stage of pathway") +
+  guides(size = "none",
+         fill = guide_legend(override.aes = list(size = 4), 
+                             title.position = "top", nrow = 3)) +
+  theme_void()+
+  theme(
+    text = element_text(size = 14), 
+    legend.position = "bottom",
+    legend.justification = 1,
+    title = element_text(size = 12)
+  )
+
+ggsave("../Results/R_output_Root_scRNAseq/subnetwork_graph.svg", height = 5, width = 5, bg = "white")
+ggsave("../Results/R_output_Root_scRNAseq/subnetwork_graph.png", height = 5, width = 5, bg = "white")
+```
+
+# Write out results 
+```{r}
+subnetwork_genes %>% 
+  arrange(module) %>% 
+  mutate(Module = case_when(
+    module == "4" ~ "Epidermis",
+    module == "5" ~ "Ground", 
+  )) %>% 
+    write_excel_csv("../Results/R_output_Root_scRNAseq/Gene_CoExp_Module_root.csv")
+```
+
+## Graph some candidates 
+### Dot plot 
+```{r}
+DefaultAssay(Root_Integrated) <- "RNA"
+
+root_redox <- subnetwork_genes %>% 
+  dplyr::filter(str_detect(functional_annoation, 
+                           "erox|ytochro|2OG|elicitor|dehydro")) %>% 
+  mutate(class = case_when(
+    str_detect(functional_annoation, "450") ~ "P450",
+    str_detect(functional_annoation, "erox") ~ "Peroxidase",
+    str_detect(functional_annoation, "2OG") ~ "2OG",
+    T ~ "ADH"
+  )) %>% 
+  arrange(class) %>% 
+  left_join(repr_loci, by = c("gene"))
+
+root_redox
+```
+```{r}
+Candidate_genes <- DotPlot(Root_Integrated, features = root_redox$gene, group.by = "cell_type")
+
+Candidate_dot <- Candidate_genes$data %>% 
+  mutate(id2 = case_when(
+    str_detect(id, "Meristem") ~ "M",
+    str_detect(id, "Root cap") ~ "RC",
+    str_detect(id, "Epide") ~ "E",
+    str_detect(id, "Stele") ~ "St",
+    str_detect(id, "Ground") ~ "G",
+    T ~ "Un"
+  )) %>% 
+  mutate(id2 = factor(id2, levels = c(
+    "M", "RC", "G",
+    "E", "St", "Un"
+  ))) %>% 
+  mutate(internal.tag = row.names(.)) %>% 
+  arrange(internal.tag) %>% 
+  mutate(gene = case_when(
+    is.na(features.plot) ~ str_remove_all(internal.tag, "rna_"),
+    T ~ features.plot %>% as.character()
+  )) %>% 
+  mutate(gene = str_sub(gene, start = 1, end = 13)) %>% 
+  inner_join(root_redox, by = c("gene")) %>%
+  ggplot(aes(y = gene, x = id2)) +
+  facet_grid(class ~., space = "free_y", scales = "free_y") +
+  geom_point(aes(size = pct.exp, fill = avg.exp.scaled), shape = 21, color = "white") +
+  # scale_y_discrete(label = NULL) +
+  scale_fill_viridis(option = "A", begin = 0, end = 0.9) +
+  guides(size = guide_legend(override.aes = list(fill = "grey40"),
+                             title.position = "top", ncol = 2)) +
+  guides(fill = guide_colorbar(title.position = "top")) +
+  labs(x = NULL,
+       y = NULL, 
+       fill = "Avg. Exp.",
+       size = "% Exp.") +
+  #theme_minimal() +
+  theme_classic() +
+  theme(text = element_text(size = 14, color = "black"),
+        axis.text = element_text(color = "black"),
+        axis.text.y = element_text(hjust = 0.5),
+        axis.text.x = element_text(hjust = 1, angle = 45, face = "plain"),
+        legend.position = "top",
+        legend.box = "horizontal", 
+        legend.key.height = unit(0.8, "lines"),
+        legend.key.width = unit(0.8, "lines"),
+        panel.spacing = unit(1, "lines"), 
+        title = element_text(size = 10, face = "bold"),
+        strip.text = element_blank(),
+        strip.background = element_blank()) 
+
+#Candidate_dot
+
+Candidate_color_strip <- root_redox %>% 
+  ggplot(aes(x = "", y = gene)) +
+  facet_grid(class ~., space = "free_y", scales = "free_y") +
+  geom_tile(aes(fill = class)) +
+  scale_fill_manual(values = carto_pal(4, "Vivid")) +
+  labs(fill = NULL) +
+  guides(fill = guide_legend(ncol = 1), title.position = "top") +
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    legend.key.height = unit(0.8, "lines"),
+    legend.key.width = unit(0.8, "lines"),
+    panel.spacing = unit(1, "lines"),
+    strip.text = element_blank(),
+    legend.position = "right"
+  )
+
+
+Candidate_labels <- root_redox %>%
+  ggplot(aes(x = "", y = gene)) +
+  facet_grid(class ~., space = "free_y", scales = "free_y") +
+  geom_text(aes(label = tag)) +
+  theme_void() +
+  theme(
+    text = element_text(size = 14, color = "black"),
+    legend.key.height = unit(0.8, "lines"),
+    legend.key.width = unit(0.8, "lines"),
+    panel.spacing = unit(1, "lines"),
+    strip.text = element_blank(),
+    legend.position = "right"
+  )
+
+wrap_plots(Candidate_dot, Candidate_color_strip, Candidate_labels,
+           nrow = 1, widths = c(1, 0.05, 0.3), guides = "collect") &
+  theme(legend.position = "right")
+
+ggsave("../Results/R_output_Root_scRNAseq/Root_candidate_enzymes.svg", height = 6.2, width = 5.5, bg = "white")
+ggsave("../Results/R_output_Root_scRNAseq/Root_candiate_enzymes.png", height = 6.2, width = 5.5, bg = "white")
+```
+### Line plot
+```{r}
+root_redox
+z_score_modules
+```
+
+```{r}
+candidate_line_plot <- z_score_modules %>% 
+  dplyr::filter(gene %in% root_redox$gene) %>% 
+  left_join(root_redox %>% 
+              dplyr::select(gene, class), 
+            by = c("gene")) %>% 
+  mutate(seurat_clusters = factor(seurat_clusters, levels = c(
+     "1", "2", "4", "8", "5", "6", "9", "0", "3", "7"
+  ))) %>% 
+  ggplot(aes(x = seurat_clusters, y = mean.rel.exp)) +
+  facet_wrap( ~ gene, scales = "free_y", ncol = 3) +
+  geom_line(aes(group = gene, color = class), alpha = 0.8, size = 1.1) +
+  scale_color_manual(values = carto_pal(4, "Vivid")) +
+  labs(x = "Seurat cluster",
+       y = "z score",
+       color = NULL) +
+  theme_classic() +
+  theme(
+    text = element_text(size = 14),
+    axis.text = element_text(color = "black"),
+    panel.spacing = unit(1, "line"),
+    legend.position = "top",
+    strip.text.y = element_text(angle = 0),
+    strip.background = element_blank()
+  )
+
+candidate_line_plot
+
+#ggsave("../Results/R_output_Root_scRNAseq/Root_candidate_enzymes_line.svg", height = 8, width = 10, bg = "white")
+#ggsave("../Results/R_output_Root_scRNAseq/Root_candidate_enzymes_line.png", height = 8, width = 10, bg = "white")
+```
+
+# Other genes 
+```{r}
+subnetwork_genes %>% 
+  dplyr::filter(str_detect(functional_annoation, 
+                           "alpha")) %>% 
+  left_join(repr_loci, by = c("gene"))
+
+subnetwork_genes %>% 
+  dplyr::filter(str_detect(functional_annoation, 
+                           "UDP")) %>% 
+  left_join(repr_loci, by = c("gene"))
+
+subnetwork_genes %>% 
+  dplyr::filter(str_detect(functional_annoation, 
+                           "HXXXD")) %>% 
+  left_join(repr_loci, by = c("gene"))
+```
+```{r}
+subnetwork_genes %>% 
+  dplyr::filter(str_detect(functional_annoation, 
+                           "MATE|ajor|permease|transporter")) %>% 
+  left_join(repr_loci, by = c("gene")) %>% 
+  arrange(functional_annoation)
+```
+
